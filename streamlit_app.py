@@ -88,16 +88,22 @@ if "kite_access_token" in st.session_state:
 # Utility: instruments dump & lookup
 # ---------------------------
 @st.cache_data(show_spinner=False, ttl=3600*24) # Cache for 24 hours
-def load_instruments(kite_instance, exchange=None):
+def load_instruments(api_key_param, access_token_param, exchange=None):
     """
     Returns pandas.DataFrame of instrument dump.
     If exchange is None, tries to fetch all instruments (may be large).
+    Requires api_key and access_token to instantiate KiteConnect.
     """
     try:
+        # Re-instantiate KiteConnect inside the cached function
+        # This makes the cached function depend on hashable parameters (strings)
+        kite_instance_for_cache = KiteConnect(api_key=api_key_param)
+        kite_instance_for_cache.set_access_token(access_token_param)
+
         if exchange:
-            inst = kite_instance.instruments(exchange)
+            inst = kite_instance_for_cache.instruments(exchange)
         else:
-            inst = kite_instance.instruments()
+            inst = kite_instance_for_cache.instruments()
         df = pd.DataFrame(inst)
         if "instrument_token" in df.columns:
             df["instrument_token"] = df["instrument_token"].astype("int64")
@@ -151,10 +157,15 @@ def get_historical(kite_instance, symbol, from_date, to_date, interval="day", ex
         
         if token is None:
             st.info(f"Attempting to load instruments for {exchange} to find token for {symbol}...")
-            all_instruments = load_instruments(kite_instance, exchange)
-            if not all_instruments.empty:
-                st.session_state["instruments_df"] = all_instruments
-                token = find_instrument_token(all_instruments, symbol, exchange)
+            # Call load_instruments with hashable parameters
+            token_access = st.session_state.get("kite_access_token")
+            if token_access:
+                all_instruments = load_instruments(API_KEY, token_access, exchange)
+                if not all_instruments.empty:
+                    st.session_state["instruments_df"] = all_instruments
+                    token = find_instrument_token(all_instruments, symbol, exchange)
+            else:
+                return {"error": "Access token not available to load instruments."}
         
         if not token:
             return {"error": f"Instrument token not found for {symbol} on {exchange}. Please ensure instruments are loaded or symbol/exchange is correct."}
@@ -205,8 +216,8 @@ with st.sidebar:
 # ---------------------------
 # Main UI - Tabs for modules
 # ---------------------------
-tabs = st.tabs(["Dashboard", "Portfolio", "Orders & Trades", "Market Data & Historical", "Websocket (Live Ticks)", "Mutual Funds", "Instruments & Utilities", "Admin/Debug"])
-tab_dashboard, tab_portfolio, tab_orders, tab_market, tab_ws, tab_mf, tab_inst, tab_debug = tabs
+tabs = st.tabs(["Dashboard", "Portfolio", "Orders & Trades", "Market Data & Historical", "Websocket (Live Ticks)", "Instruments & Utilities"])
+tab_dashboard, tab_portfolio, tab_orders, tab_market, tab_ws, tab_inst = tabs
 
 # ---------------------------
 # TAB: DASHBOARD (New Tab)
@@ -232,7 +243,21 @@ with tab_dashboard:
                     st.metric("Used Margin", f"₹ {equity_margin.get('utilised', {}).get('overall', 0):,.2f}")
                     
                     with st.expander("Detailed Margins"):
-                        st.json(margins)
+                        # Convert to DataFrame for better display
+                        margin_data = {
+                            "Equity": {
+                                "Available Cash": equity_margin.get('available', {}).get('cash', 0),
+                                "Used Overall": equity_margin.get('utilised', {}).get('overall', 0),
+                                "Intraday Pay CNC": equity_margin.get('available', {}).get('intraday_payin_cnc', 0),
+                                "Delivery Margin": equity_margin.get('available', {}).get('delivery_margin', 0)
+                            },
+                            "Commodity": {
+                                "Available Cash": commodity_margin.get('available', {}).get('cash', 0),
+                                "Used Overall": commodity_margin.get('utilised', {}).get('overall', 0)
+                            }
+                        }
+                        df_margin = pd.DataFrame.from_dict(margin_data, orient='index')
+                        st.dataframe(df_margin.applymap(lambda x: f"₹ {x:,.2f}" if isinstance(x, (int, float)) else x), use_container_width=True)
                 except Exception as e:
                     st.error(f"Error fetching margins: {e}")
         
@@ -250,17 +275,24 @@ with tab_dashboard:
 
                         if not df_holdings.empty:
                             df_holdings_display = df_holdings[['tradingsymbol', 'quantity', 'average_price', 'last_price', 'pnl', 'value']]
-                            st.dataframe(df_holdings_display.head(5)) # Show top 5
+                            st.dataframe(df_holdings_display.head(5), use_container_width=True) # Show top 5
                             with st.expander("All Holdings"):
-                                st.dataframe(df_holdings)
+                                st.dataframe(df_holdings, use_container_width=True)
 
                             # Basic pie chart for holdings distribution
                             holdings_chart_data = df_holdings.groupby('tradingsymbol')['value'].sum().reset_index()
-                            chart = alt.Chart(holdings_chart_data).mark_arc().encode(
+                            # Limit to top 10 for readability, group others
+                            if len(holdings_chart_data) > 10:
+                                holdings_chart_data = holdings_chart_data.nlargest(10, 'value')
+                                other_value = df_holdings['value'].sum() - holdings_chart_data['value'].sum()
+                                holdings_chart_data = pd.concat([holdings_chart_data, pd.DataFrame([{'tradingsymbol': 'Others', 'value': other_value}])])
+
+                            chart = alt.Chart(holdings_chart_data).mark_arc(outerRadius=120).encode(
                                 theta=alt.Theta(field="value", type="quantitative"),
                                 color=alt.Color(field="tradingsymbol", type="nominal", title="Symbol"),
-                                order=alt.Order(field="value", sort="descending")
-                            ).properties(title="Holdings Value Distribution (Top 10)", width=300, height=300)
+                                order=alt.Order(field="value", sort="descending"),
+                                tooltip=["tradingsymbol", alt.Tooltip("value", format=",.2f")]
+                            ).properties(title="Holdings Value Distribution").interactive()
                             st.altair_chart(chart, use_container_width=True)
                     else:
                         st.info("No holdings found.")
@@ -283,15 +315,15 @@ with tab_dashboard:
 
                     if not df_net_positions.empty:
                         st.subheader("Net Positions")
-                        st.dataframe(df_net_positions[['tradingsymbol', 'quantity', 'buy_price', 'sell_price', 'pnl']].head(5))
+                        st.dataframe(df_net_positions[['tradingsymbol', 'quantity', 'buy_price', 'sell_price', 'pnl']].head(5), use_container_width=True)
                         with st.expander("All Net Positions"):
-                            st.dataframe(df_net_positions)
+                            st.dataframe(df_net_positions, use_container_width=True)
 
                     if not df_day_positions.empty:
                         st.subheader("Day Positions")
-                        st.dataframe(df_day_positions[['tradingsymbol', 'quantity', 'buy_price', 'sell_price', 'pnl']].head(5))
+                        st.dataframe(df_day_positions[['tradingsymbol', 'quantity', 'buy_price', 'sell_price', 'pnl']].head(5), use_container_width=True)
                         with st.expander("All Day Positions"):
-                            st.dataframe(df_day_positions)
+                            st.dataframe(df_day_positions, use_container_width=True)
                 except Exception as e:
                     st.error(f"Error fetching positions: {e}")
 
@@ -315,7 +347,7 @@ with tab_portfolio:
                     if holdings:
                         df = pd.DataFrame(holdings)
                         # Clean and display
-                        df_display = df[['tradingsymbol', 'isin', 'quantity', 'average_price', 'last_price', 'close_price', 'pnl', 'day_change_percentage', 'value']]
+                        df_display = df[['tradingsymbol', 'isin', 'quantity', 'average_price', 'last_price', 'close_price', 'pnl', 'day_change_percentage', 'value']].copy() # Use .copy() to avoid SettingWithCopyWarning
                         df_display['value'] = df_display['value'].map('₹ {:,.2f}'.format)
                         df_display['average_price'] = df_display['average_price'].map('₹ {:,.2f}'.format)
                         df_display['last_price'] = df_display['last_price'].map('₹ {:,.2f}'.format)
@@ -336,7 +368,8 @@ with tab_portfolio:
                         pnl_chart = alt.Chart(pnl_chart_data).mark_bar().encode(
                             x=alt.X('pnl', title='Profit/Loss (₹)'),
                             y=alt.Y('tradingsymbol', sort='-x', title='Symbol'),
-                            color=alt.Color('color_pnl', scale=alt.Scale(domain=['positive', 'negative'], range=['green', 'red']), legend=None)
+                            color=alt.Color('color_pnl', scale=alt.Scale(domain=['positive', 'negative'], range=['green', 'red']), legend=None),
+                            tooltip=['tradingsymbol', alt.Tooltip('pnl', format='f')]
                         ).properties(title='Current P&L per Holding').interactive()
                         st.altair_chart(pnl_chart, use_container_width=True)
 
@@ -694,13 +727,18 @@ with tab_market:
             with st.expander("Step 1: Load Instrument Dump (if token lookup fails)"):
                 exchange_for_dump = st.selectbox("Select Exchange to load instruments for lookup:", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0, key="hist_inst_exchange")
                 if st.button("Load Instrument Dump for Lookup", key="load_inst_dump_btn"):
-                    inst_df = load_instruments(k, exchange_for_dump)
-                    st.session_state["instruments_df"] = inst_df
-                    if not inst_df.empty:
-                        st.success(f"Loaded {len(inst_df)} instruments for {exchange_for_dump}.")
-                        st.dataframe(inst_df.head()) # Show a preview
+                    # Call load_instruments with hashable parameters
+                    token_access = st.session_state.get("kite_access_token")
+                    if token_access:
+                        inst_df = load_instruments(API_KEY, token_access, exchange_for_dump)
+                        st.session_state["instruments_df"] = inst_df
+                        if not inst_df.empty:
+                            st.success(f"Loaded {len(inst_df)} instruments for {exchange_for_dump}.")
+                            st.dataframe(inst_df.head(), use_container_width=True) # Show a preview
+                        else:
+                            st.warning(f"Could not load instruments for {exchange_for_dump}.")
                     else:
-                        st.warning(f"Could not load instruments for {exchange_for_dump}.")
+                        st.error("Access token not available. Please log in.")
 
             col_hist1, col_hist2, col_hist3 = st.columns(3)
             with col_hist1:
@@ -737,7 +775,11 @@ with tab_market:
                                 alt.datum.open < alt.datum.close,
                                 alt.value('green'),
                                 alt.value('red')
-                            )
+                            ),
+                            tooltip=[
+                                alt.Tooltip('date:T', title='Date/Time'),
+                                'open', 'high', 'low', 'close', 'volume'
+                            ]
                         )
                         # Candlestick wicks
                         bars = base.mark_bar().encode(
@@ -747,7 +789,11 @@ with tab_market:
                                 alt.datum.open < alt.datum.close,
                                 alt.value('green'),
                                 alt.value('red')
-                            )
+                            ),
+                            tooltip=[
+                                alt.Tooltip('date:T', title='Date/Time'),
+                                'open', 'high', 'low', 'close', 'volume'
+                            ]
                         )
 
                         # Volume bar chart
@@ -758,7 +804,11 @@ with tab_market:
                                 alt.datum.open < alt.datum.close,
                                 alt.value('lightgreen'),
                                 alt.value('salmon')
-                            )
+                            ),
+                            tooltip=[
+                                alt.Tooltip('date:T', title='Date/Time'),
+                                'volume'
+                            ]
                         ).properties(height=100)
 
                         chart = alt.vconcat(candlesticks + bars, volume).resolve_scale(x='shared').properties(
@@ -798,7 +848,7 @@ def update_live_ticks_ui():
                         x=alt.X('time:T', title='Time', axis=alt.Axis(format='%H:%M:%S')),
                         y=alt.Y('last_price:Q', title='LTP'),
                         color='instrument_token:N',
-                        tooltip=['time:T', 'instrument_token', 'last_price:Q']
+                        tooltip=['time:T', 'instrument_token', alt.Tooltip('last_price', format='f')]
                     ).properties(
                         height=250
                     ).interactive()
@@ -811,13 +861,22 @@ def update_live_ticks_ui():
 def ticker_thread_target(kt_instance):
     """Target function for the background thread to run KiteTicker."""
     try:
-        kt_instance.connect(threaded=True, disable_ssl_certs=True) # disable_ssl_certs for some environments, remove if not needed
-        # Keep this thread alive while the ticker is running
+        # It's important that connect() is called in the thread that's going to run the WebSocket loop.
+        # threaded=True for KiteTicker means its internal loop runs in a daemon thread.
+        # The external thread (this one) just needs to keep running to prevent Python from exiting.
+        # Check KiteTicker documentation for exact behavior; sometimes connect() is blocking if not threaded.
+        kt_instance.connect(threaded=True, disable_ssl_certs=True) 
+        
+        # Keep this thread alive while the ticker is running (by monitoring the session state flag)
         while st.session_state["kt_running"]:
             time.sleep(1) 
     except Exception as e:
         st.session_state["kt_ticks"].append({"event": "ticker_error", "error": str(e), "time": datetime.utcnow().isoformat()})
         st.session_state["kt_running"] = False
+    finally:
+        # Ensure ticker disconnects if the loop breaks
+        if kt_instance and kt_instance.is_connected():
+            kt_instance.disconnect()
 
 
 with tab_ws:
@@ -900,7 +959,8 @@ with tab_ws:
                         kt.disconnect()
                     st.session_state["kt_running"] = False
                     if st.session_state["kt_thread"] and st.session_state["kt_thread"].is_alive():
-                        st.session_state["kt_thread"].join(timeout=2) # Wait for thread to terminate
+                        # Give it a moment to properly shut down, then forcefully stop if needed
+                        st.session_state["kt_thread"].join(timeout=2) 
                     st.success("Ticker stopped.")
                     st.session_state["kt_ticker"] = None
                     st.session_state["kt_thread"] = None
@@ -983,128 +1043,6 @@ with tab_ws:
         else:
             st.info("Start the ticker and subscribe to instruments to see live ticks here.")
 
-
-# ---------------------------
-# TAB: MUTUAL FUNDS
-# ---------------------------
-with tab_mf:
-    st.header("📈 Mutual Funds (SIP / Lumpsum)")
-
-    if not k:
-        st.info("Login first to use mutual funds APIs.")
-    else:
-        st.markdown("Access Mutual Fund instruments, place orders, and view your MF order history.")
-
-        tab_mf_inst, tab_mf_place, tab_mf_history = st.tabs(["MF Instruments", "Place MF Order", "MF Order History"])
-
-        with tab_mf_inst:
-            st.subheader("Mutual Fund Instruments")
-            col_mf1, col_mf2 = st.columns([1, 2])
-            with col_mf1:
-                if st.button("Load MF Instruments", key="load_mf_instruments_btn"):
-                    try:
-                        mf_inst = k.get_mf_instruments()
-                        df_mf_inst = pd.DataFrame(mf_inst)
-                        st.session_state["mf_instruments"] = df_mf_inst
-                        st.success(f"Loaded {len(df_mf_inst)} mutual fund instruments.")
-                    except Exception as e:
-                        st.error(f"Error loading MF instruments: {e}")
-            
-            with col_mf2:
-                mf_search_term = st.text_input("Search MF Instruments by name/scheme code:", key="mf_search_input")
-                df_mf = st.session_state.get("mf_instruments", pd.DataFrame())
-                if not df_mf.empty:
-                    if mf_search_term:
-                        filtered_df_mf = df_mf[df_mf.apply(lambda row: row.astype(str).str.contains(mf_search_term, case=False).any(), axis=1)]
-                        st.dataframe(filtered_df_mf, use_container_width=True)
-                    else:
-                        st.dataframe(df_mf.head(100), use_container_width=True)
-                    
-                    st.download_button(
-                        label="Download Full MF Instruments CSV",
-                        data=df_mf.to_csv(index=False).encode('utf-8'),
-                        file_name="mf_instruments.csv",
-                        mime="text/csv",
-                    )
-                else:
-                    st.info("No MF instruments loaded yet. Click 'Load MF Instruments' to fetch them.")
-
-        with tab_mf_place:
-            st.subheader("Place a New Mutual Fund Order")
-            with st.form("place_mf_form"):
-                col_mf_place1, col_mf_place2 = st.columns(2)
-                with col_mf_place1:
-                    tradingsymbol_mf = st.text_input("Tradingsymbol (Scheme Code/Folio ID)", help="Find this from 'MF Instruments' tab.", key="mf_tradingsymbol")
-                    transaction_type_mf = st.selectbox("Transaction Type", ["BUY", "SELL"], index=0, key="mf_transaction_type")
-                    order_type_mf = st.selectbox("Order Type", ["PURCHASE", "SIP", "REDEMPTION"], index=0, key="mf_order_type")
-                    
-                    if order_type_mf == "SIP":
-                        initial_amount = st.number_input("Initial Amount (Lumpsum for SIP first installment)", min_value=0.0, format="%.2f", value=0.0, key="mf_initial_amount")
-                        frequency = st.selectbox("SIP Frequency", ["monthly", "weekly", "daily"], key="mf_frequency")
-                        inst_count = st.number_input("Number of SIP Installments", min_value=1, value=12, step=1, key="mf_inst_count")
-                        inst_amount = st.number_input("SIP Installment Amount", min_value=0.0, format="%.2f", value=1000.0, key="mf_inst_amount")
-                        tag_mf = st.text_input("Tag (optional)", key="mf_tag_sip")
-                    else:
-                        quantity_mf = st.number_input("Quantity (Units - for REDEMPTION)", min_value=0.0, format="%.3f", value=0.0, key="mf_quantity")
-                        amount_mf = st.number_input("Amount (for PURCHASE)", min_value=0.0, format="%.2f", value=0.0, key="mf_amount")
-                        tag_mf = st.text_input("Tag (optional)", key="mf_tag_lump")
-                
-                with col_mf_place2:
-                    st.info("Ensure you have the correct `tradingsymbol` (scheme code) for placing MF orders.")
-                    st.write("For SIP orders, `initial_amount` is for the first installment, `inst_amount` for subsequent ones.")
-
-                submit_mf_order = st.form_submit_button("Place MF Order")
-
-                if submit_mf_order:
-                    try:
-                        mf_args = {
-                            "tradingsymbol": tradingsymbol_mf,
-                            "transaction_type": transaction_type_mf,
-                            "order_type": order_type_mf,
-                        }
-                        
-                        if order_type_mf == "SIP":
-                            mf_args["initial_amount"] = initial_amount
-                            mf_args["frequency"] = frequency
-                            mf_args["instalment_count"] = int(inst_count)
-                            mf_args["instalment_amount"] = inst_amount
-                        else: # PURCHASE or REDEMPTION
-                            if transaction_type_mf == "BUY": # PURCHASE
-                                if amount_mf > 0:
-                                    mf_args["amount"] = amount_mf
-                                else:
-                                    st.warning("Amount is required for BUY (PURCHASE) orders.")
-                                    st.stop()
-                            elif transaction_type_mf == "SELL": # REDEMPTION
-                                if quantity_mf > 0:
-                                    mf_args["quantity"] = quantity_mf
-                                else:
-                                    st.warning("Quantity is required for SELL (REDEMPTION) orders.")
-                                    st.stop()
-                        
-                        if tag_mf:
-                            mf_args["tag"] = tag_mf
-
-                        resp = k.place_mf_order(**mf_args)
-                        st.success("MF order placed successfully!")
-                        st.markdown("#### MF Order Response:")
-                        st.json(resp)
-                    except Exception as e:
-                        st.error(f"Place MF order failed: {e}. Please check the required parameters and your API documentation.")
-
-        with tab_mf_history:
-            st.subheader("Your Mutual Fund Order History")
-            if st.button("Refresh MF Orders", key="refresh_mf_orders_btn"):
-                try:
-                    mf_orders = k.get_mf_orders()
-                    if mf_orders:
-                        df_mf_orders = pd.DataFrame(mf_orders)
-                        st.dataframe(df_mf_orders, use_container_width=True)
-                    else:
-                        st.info("No mutual fund orders found.")
-                except Exception as e:
-                    st.error(f"Error fetching MF orders: {e}")
-
 # ---------------------------
 # TAB: INSTRUMENTS DUMP & UTILS
 # ---------------------------
@@ -1118,12 +1056,17 @@ with tab_inst:
     with col_inst_load:
         if st.button(f"Load Instruments for {inst_exchange} (Cached)", key="load_inst_btn"):
             try:
-                df = load_instruments(k, inst_exchange)
-                st.session_state["instruments_df"] = df
-                if not df.empty:
-                    st.success(f"Loaded {len(df)} instruments for {inst_exchange}.")
+                # Call load_instruments with hashable parameters
+                token_access = st.session_state.get("kite_access_token")
+                if token_access:
+                    df = load_instruments(API_KEY, token_access, inst_exchange)
+                    st.session_state["instruments_df"] = df
+                    if not df.empty:
+                        st.success(f"Loaded {len(df)} instruments for {inst_exchange}.")
+                    else:
+                        st.warning(f"Could not load instruments for {inst_exchange}. Check connection or exchange validity.")
                 else:
-                    st.warning(f"Could not load instruments for {inst_exchange}. Check connection or exchange validity.")
+                    st.error("Access token not available. Please log in first.")
             except Exception as e:
                 st.error(f"Load instruments failed: {e}")
     
@@ -1170,42 +1113,3 @@ with tab_inst:
                     st.warning(f"Instrument token not found for `{sy}` on `{ex}`. Ensure the symbol and exchange are correct, and the instrument dump for this exchange has been loaded.")
     else:
         st.info("No instruments loaded yet. Click 'Load Instruments' to fetch them.")
-
-# ---------------------------
-# TAB: ADMIN / DEBUG
-# ---------------------------
-with tab_debug:
-    st.header("⚙️ Admin / Debug Information")
-    st.markdown("This tab provides insights into the application's state and Kite Connect library details.")
-
-    st.subheader("Streamlit Session State")
-    st.write("Current session keys (sensitive values are hidden):")
-    safe_view = {k: (type(v).__name__ if k not in ["kite_login_response", "kite_access_token"] else ("login_response_present" if k == "kite_login_response" else "token_present")) for k, v in st.session_state.items()}
-    st.json(safe_view)
-    
-    st.markdown("---")
-    st.subheader("Raw Login Response")
-    if st.session_state.get("kite_login_response"):
-        if st.button("Show Raw Login Response (contains sensitive info)", key="show_raw_login_btn"):
-            lr = st.session_state.get("kite_login_response")
-            st.code(json.dumps(lr, default=str, indent=2), language="json")
-    else:
-        st.info("Login response not available yet.")
-
-    st.markdown("---")
-    st.subheader("Library Versions")
-    try:
-        import kiteconnect, pkg_resources
-        st.write(f"**pykiteconnect:** `{pkg_resources.get_distribution('kiteconnect').version}`")
-    except Exception:
-        st.write("`pykiteconnect` not found or version unknown.")
-    st.write(f"**Streamlit:** `{st.__version__}`")
-
-    st.markdown("---")
-    st.subheader("Important Notes")
-    st.info("""
-    - **Request Token:** The `request_token` obtained during login is single-use and short-lived. If you encounter an "Invalid or expired token" error, you'll need to re-login to generate a new one.
-    - **Production Security:** For a production environment, the `api_secret` should never be exposed in client-side code (like a Streamlit frontend). The `request_token` exchange should happen on a secure backend server. This demo keeps it simple for demonstration purposes.
-    - **API Permissions/Subscriptions:** Some Kite Connect API calls (e.g., full market depth, historical data, specific mutual fund calls) may require active subscriptions or specific permissions enabled on your Kite Connect API key. If you face "Insufficient permission" or similar errors, check your Zerodha Kite Connect developer console.
-    - **Method Names:** The `pykiteconnect` library method names closely map to the HTTP API endpoints. If you encounter `AttributeError` for a method, consult the official `pykiteconnect` documentation or Kite Connect API docs for the correct method signature and required parameters.
-    """)
