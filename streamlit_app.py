@@ -75,17 +75,17 @@ if "kite_access_token" in st.session_state:
 # Utility: instruments dump & lookup
 # ---------------------------
 @st.cache_data(show_spinner=False)
-def load_instruments(exchange=None):
+def load_instruments(kite_instance, exchange=None):
     """
     Returns pandas.DataFrame of instrument dump.
     If exchange is None, tries to fetch all instruments (may be large).
     """
     try:
         if exchange:
-            inst = k.instruments(exchange)
+            inst = kite_instance.instruments(exchange)
         else:
             # call without exchange may return full dump
-            inst = k.instruments()
+            inst = kite_instance.instruments()
         df = pd.DataFrame(inst)
         # keep token as int
         if "instrument_token" in df.columns:
@@ -95,15 +95,68 @@ def load_instruments(exchange=None):
         st.warning(f"Could not fetch instruments: {e}")
         return pd.DataFrame()
 
-def find_instrument_token(df, exchange, tradingsymbol):
+def find_instrument_token(df, tradingsymbol, exchange="NSE"):
     """Lookup instrument_token given exchange and tradingsymbol (case-insensitive)."""
     if df.empty:
         return None
-    mask = (df.get("exchange", "").str.upper() == exchange.upper()) & (df.get("tradingsymbol", "").str.upper() == tradingsymbol.upper())
+    mask = (df.get("exchange", "").str.upper() == exchange.upper()) & \
+           (df.get("tradingsymbol", "").str.upper() == tradingsymbol.upper())
     hits = df[mask]
     if not hits.empty:
         return int(hits.iloc[0]["instrument_token"])
     return None
+
+# Custom helper functions for robustness and adhering to API requirements
+
+# Fix for quotes (using ltp as requested, if quote has permission issues)
+def get_ltp_price(kite_instance, symbol, exchange="NSE"):
+    try:
+        exchange_symbol = f"{exchange.upper()}:{symbol.upper()}"
+        ltp_data = kite_instance.ltp([exchange_symbol]) # ltp expects a list of instrument keys
+        return ltp_data
+    except Exception as e:
+        return {"error": str(e)}
+
+# Fix for quotes (original quote function if preferred, requires permission)
+def get_full_quote(kite_instance, symbol, exchange="NSE"):
+    try:
+        exchange_symbol = f"{exchange.upper()}:{symbol.upper()}"
+        quote = kite_instance.quote(exchange_symbol)
+        return quote
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# Fix for historical data
+def get_historical(kite_instance, symbol, from_date, to_date, interval="day", exchange="NSE"):
+    try:
+        # First, try to get the instrument token from the session state's loaded instruments_df
+        inst_df = st.session_state.get("instruments_df", pd.DataFrame())
+        token = None
+        if not inst_df.empty:
+            token = find_instrument_token(inst_df, symbol, exchange)
+        
+        # If not found in loaded DF, try fetching directly from Kite and storing
+        if token is None:
+            # Load instruments for the specific exchange (and cache them)
+            st.info(f"Attempting to load instruments for {exchange} to find token for {symbol}...")
+            all_instruments = load_instruments(kite_instance, exchange)
+            if not all_instruments.empty:
+                st.session_state["instruments_df"] = all_instruments # Update cached DF
+                token = find_instrument_token(all_instruments, symbol, exchange)
+        
+        if not token:
+            return {"error": f"Instrument token not found for {symbol} on {exchange}. Please ensure instruments are loaded or symbol/exchange is correct."}
+        
+        # Ensure dates are in the correct format for historical_data API
+        # The API expects datetime objects or ISO 8601 strings
+        from_datetime = datetime.combine(from_date, datetime.min.time())
+        to_datetime = datetime.combine(to_date, datetime.max.time())
+
+        data = kite_instance.historical_data(token, from_date=from_datetime, to_date=to_datetime, interval=interval)
+        return data
+    except Exception as e:
+        return {"error": str(e)}
 
 # ---------------------------
 # Sidebar quick actions / profile / logout
@@ -290,16 +343,27 @@ with tab_market:
         st.info("Login first to fetch market data (quotes/historical).")
     else:
         st.subheader("Quote / LTP")
-        q_exchange = st.selectbox("Exchange for quote", ["NSE", "BSE", "NFO"], index=0)
-        q_symbol = st.text_input("Tradingsymbol (eg INFY)", value="INFY")
-        if st.button("Get quote / LTP"):
-            try:
-                # Quote typically expects keys like "NSE:INFY" or instrument tokens list
-                key = f"{q_exchange}:{q_symbol}"
-                quote = k.quote(key)
-                st.json(quote)
-            except Exception as e:
-                st.error(f"Quote failed: {e}")
+        q_exchange = st.selectbox("Exchange for quote", ["NSE", "BSE", "NFO"], index=0, key="quote_exchange")
+        q_symbol = st.text_input("Tradingsymbol (eg INFY)", value="INFY", key="quote_symbol")
+
+        # Option to choose between LTP and full Quote
+        quote_type = st.radio("Choose data type:", ("LTP (Last Traded Price)", "Full Quote (OHLC, Depth)"), index=0)
+
+        if st.button("Get market data"):
+            if quote_type == "LTP (Last Traded Price)":
+                # Using the fixed get_ltp_price function
+                ltp_response = get_ltp_price(k, q_symbol, q_exchange)
+                if "error" in ltp_response:
+                    st.error(f"LTP fetch failed: {ltp_response['error']}")
+                else:
+                    st.json(ltp_response)
+            else: # Full Quote
+                # Using the fixed get_full_quote function
+                quote_response = get_full_quote(k, q_symbol, q_exchange)
+                if "error" in quote_response:
+                    st.error(f"Full Quote fetch failed: {quote_response['error']}")
+                else:
+                    st.json(quote_response)
 
         st.markdown("---")
         st.subheader("Historical candles")
@@ -307,10 +371,15 @@ with tab_market:
         with st.expander("Instrument dump (load)"):
             exchange_for_dump = st.selectbox("Instrument dump exchange (for lookup)", ["NSE", "BSE", "NFO", "BCD", "MCX"], index=0, key="inst_exchange")
             if st.button("Load instrument dump"):
-                inst_df = load_instruments(exchange_for_dump)
+                # Pass 'k' (authenticated KiteConnect instance) to load_instruments
+                inst_df = load_instruments(k, exchange_for_dump)
                 st.session_state["instruments_df"] = inst_df
-                st.success(f"Loaded {len(inst_df)} instruments for {exchange_for_dump}")
+                if not inst_df.empty:
+                    st.success(f"Loaded {len(inst_df)} instruments for {exchange_for_dump}")
+                else:
+                    st.warning(f"Could not load instruments for {exchange_for_dump}.")
 
+        # Retrieve instruments_df from session state for lookups
         inst_df = st.session_state.get("instruments_df", pd.DataFrame())
 
         hist_exchange = st.selectbox("Exchange (for historical)", ["NSE", "BSE", "NFO"], index=0, key="hist_ex")
@@ -320,24 +389,15 @@ with tab_market:
         interval = st.selectbox("Interval", ["minute", "5minute", "15minute", "30minute", "day", "week", "month"], index=4)
 
         if st.button("Fetch historical data"):
-            try:
-                # Need instrument_token numeric. Try to find from inst_df if loaded.
-                token = None
-                if not inst_df.empty:
-                    token = find_instrument_token(inst_df, hist_exchange, hist_symbol)
-                if token is None:
-                    st.warning("Instrument token not found in loaded dump. Please load instrument dump for that exchange or provide token manually.")
-                    manual_token = st.text_input("Manual instrument_token (optional)", value="")
-                    if manual_token:
-                        token = int(manual_token)
-                if token is None:
-                    st.stop()
-
-                # pykiteconnect historical_data expects iso/datetime strings
-                start = datetime.combine(from_date, datetime.min.time()).isoformat()
-                end = datetime.combine(to_date, datetime.max.time()).isoformat()
-                candles = k.historical_data(token, from_date=start, to_date=end, interval=interval)
-                df = pd.DataFrame(candles)
+            # Call the fixed get_historical function, passing 'k'
+            hist_data = get_historical(k, hist_symbol, from_date, to_date, interval, hist_exchange)
+            
+            if "error" in hist_data:
+                st.error(f"Historical fetch failed: {hist_data['error']}")
+                if "Insufficient permission" in hist_data['error']:
+                    st.warning("This error often indicates that your Zerodha API key does not have an active subscription for historical data. Please check your Kite Connect developer console for subscription status.")
+            else:
+                df = pd.DataFrame(hist_data)
                 if not df.empty:
                     # normalize datetime
                     if "date" in df.columns:
@@ -345,8 +405,6 @@ with tab_market:
                     st.dataframe(df)
                 else:
                     st.write("No historical data returned.")
-            except Exception as e:
-                st.error(f"Historical fetch failed: {e}")
 
 # ---------------------------
 # TAB: WEBSOCKET (Ticker)
@@ -394,12 +452,15 @@ with tab_ws:
                         # subscribe if tokens provided
                         if symbol_for_ws:
                             tokens = [int(x.strip()) for x in symbol_for_ws.split(",") if x.strip()]
-                            try:
-                                ws.subscribe(tokens)
-                            except Exception:
-                                # some versions accept ws.subscribe or ws.subscribe(tokens)
-                                pass
-                        ws.set_mode(ws.MODE_FULL, [])  # attempt to set mode (may require tokens list)
+                            if tokens: # only subscribe if there are actual tokens
+                                try:
+                                    ws.subscribe(tokens)
+                                    ws.set_mode(ws.MODE_FULL, tokens) # Attempt to set mode for subscribed tokens
+                                except Exception as e:
+                                    st.session_state["kt_ticks"].append({"event": "subscribe_error", "error": str(e), "time": datetime.utcnow().isoformat()})
+                        else:
+                            # If no tokens provided, just connect and don't subscribe initially
+                            pass 
 
                     def on_ticks(ws, ticks):
                         # append latest ticks (limit to 200)
@@ -414,14 +475,10 @@ with tab_ws:
                         st.session_state["kt_running"] = False
 
                     # bind callbacks (function names depend on pykiteconnect version)
-                    try:
-                        kt.on_connect = on_connect
-                        kt.on_ticks = on_ticks
-                        kt.on_close = on_close
-                    except Exception:
-                        kt.on_connect = on_connect
-                        kt.on_ticks = on_ticks
-                        kt.on_close = on_close
+                    # Note: Direct assignment to kt.on_connect etc. is correct for pykiteconnect
+                    kt.on_connect = on_connect
+                    kt.on_ticks = on_ticks
+                    kt.on_close = on_close
 
                     # run ticker in a background thread
                     def run_ticker():
@@ -450,7 +507,8 @@ with tab_ws:
                             kt.disconnect()
                         except Exception:
                             try:
-                                kt.stop()
+                                # Fallback for older versions or if disconnect fails
+                                kt.stop() 
                             except Exception:
                                 pass
                     st.session_state["kt_running"] = False
@@ -514,6 +572,12 @@ with tab_mf:
                         mf_args["quantity"] = float(quantity)
                     if amount:
                         mf_args["amount"] = float(amount)
+                    
+                    # You might need to add `scheme_type` or other required fields based on Kite MF API documentation
+                    # For example:
+                    # mf_args["scheme_type"] = "SIP" if is_sip else "PURCHASE" 
+                    # mf_args["tag"] = "MySIPOrder"
+
                     resp = k.place_mf_order(**mf_args)
                     st.success("MF order response")
                     st.json(resp)
@@ -536,7 +600,8 @@ with tab_inst:
     inst_exchange = st.selectbox("Load instruments for exchange", ["NSE", "BSE", "NFO", "BCD", "MCX"], index=0)
     if st.button("Load instruments for exchange (cached)"):
         try:
-            df = load_instruments(inst_exchange)
+            # Pass 'k' (authenticated KiteConnect instance) to load_instruments
+            df = load_instruments(k, inst_exchange)
             st.session_state["instruments_df"] = df
             st.success(f"Loaded {len(df)} instruments for {inst_exchange}")
         except Exception as e:
@@ -547,7 +612,8 @@ with tab_inst:
         st.write("Search by trading symbol & exchange")
         sy = st.text_input("Symbol to search (tradingsymbol)", value="INFY", key="inst_search_sym")
         if st.button("Find instrument token"):
-            token = find_instrument_token(df, inst_exchange, sy)
+            # Pass exchange to find_instrument_token
+            token = find_instrument_token(df, sy, inst_exchange)
             if token:
                 st.success(f"Found instrument_token: {token}")
             else:
@@ -584,5 +650,3 @@ with tab_debug:
     - For production: exchange request_token on a secure server; don't keep api_secret in public client code.
     - If MF / some endpoints methods raise AttributeError, check your pykiteconnect version and refer to docs for exact method names (they map closely to the HTTP endpoints).
     """)
-
-
