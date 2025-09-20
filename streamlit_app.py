@@ -108,7 +108,7 @@ def find_instrument_token(df, tradingsymbol, exchange="NSE"):
 
 # Custom helper functions for robustness and adhering to API requirements
 
-# Fix for quotes (using ltp as requested, if quote has permission issues)
+# Helper for LTP quotes (uses kite.ltp)
 def get_ltp_price(kite_instance, symbol, exchange="NSE"):
     try:
         exchange_symbol = f"{exchange.upper()}:{symbol.upper()}"
@@ -117,8 +117,17 @@ def get_ltp_price(kite_instance, symbol, exchange="NSE"):
     except Exception as e:
         return {"error": str(e)}
 
-# Fix for quotes (original quote function if preferred, requires permission)
-def get_full_quote(kite_instance, symbol, exchange="NSE"):
+# Helper for OHLC + LTP quotes (uses kite.ohlc)
+def get_ohlc_quote(kite_instance, symbol, exchange="NSE"):
+    try:
+        exchange_symbol = f"{exchange.upper()}:{symbol.upper()}"
+        ohlc_data = kite_instance.ohlc([exchange_symbol]) # ohlc expects a list of instrument keys
+        return ohlc_data
+    except Exception as e:
+        return {"error": str(e)}
+
+# Helper for Full Market quotes (uses kite.quote)
+def get_full_market_quote(kite_instance, symbol, exchange="NSE"):
     try:
         exchange_symbol = f"{exchange.upper()}:{symbol.upper()}"
         quote = kite_instance.quote(exchange_symbol)
@@ -342,28 +351,30 @@ with tab_market:
     if not k:
         st.info("Login first to fetch market data (quotes/historical).")
     else:
-        st.subheader("Quote / LTP")
-        q_exchange = st.selectbox("Exchange for quote", ["NSE", "BSE", "NFO"], index=0, key="quote_exchange")
-        q_symbol = st.text_input("Tradingsymbol (eg INFY)", value="INFY", key="quote_symbol")
+        st.subheader("Market Data Snapshot")
+        q_exchange = st.selectbox("Exchange for market data", ["NSE", "BSE", "NFO"], index=0, key="market_exchange")
+        q_symbol = st.text_input("Tradingsymbol (e.g., INFY)", value="INFY", key="market_symbol")
 
-        # Option to choose between LTP and full Quote
-        quote_type = st.radio("Choose data type:", ("LTP (Last Traded Price)", "Full Quote (OHLC, Depth)"), index=0)
+        # Option to choose between LTP, OHLC, and full Quote
+        market_data_type = st.radio("Choose data type:", 
+                                     ("LTP (Last Traded Price)", "OHLC + LTP", "Full Market Quote (OHLC, Depth, OI)"), 
+                                     index=0, key="market_data_type_radio")
 
         if st.button("Get market data"):
-            if quote_type == "LTP (Last Traded Price)":
-                # Using the fixed get_ltp_price function
-                ltp_response = get_ltp_price(k, q_symbol, q_exchange)
-                if "error" in ltp_response:
-                    st.error(f"LTP fetch failed: {ltp_response['error']}")
-                else:
-                    st.json(ltp_response)
-            else: # Full Quote
-                # Using the fixed get_full_quote function
-                quote_response = get_full_quote(k, q_symbol, q_exchange)
-                if "error" in quote_response:
-                    st.error(f"Full Quote fetch failed: {quote_response['error']}")
-                else:
-                    st.json(quote_response)
+            market_data_response = {}
+            if market_data_type == "LTP (Last Traded Price)":
+                market_data_response = get_ltp_price(k, q_symbol, q_exchange)
+            elif market_data_type == "OHLC + LTP":
+                market_data_response = get_ohlc_quote(k, q_symbol, q_exchange)
+            else: # Full Market Quote
+                market_data_response = get_full_market_quote(k, q_symbol, q_exchange)
+            
+            if "error" in market_data_response:
+                st.error(f"Market data fetch failed: {market_data_response['error']}")
+                if "Insufficient permission" in market_data_response['error']:
+                    st.warning("For 'Full Market Quote', you might need a paid subscription to the Kite Connect API. Try 'LTP' or 'OHLC + LTP' if you encounter permission errors.")
+            else:
+                st.json(market_data_response)
 
         st.markdown("---")
         st.subheader("Historical candles")
