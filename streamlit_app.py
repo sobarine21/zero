@@ -9,7 +9,7 @@ from datetime import datetime, date
 import altair as alt
 
 st.set_page_config(page_title="Kite Connect - Full demo", layout="wide", initial_sidebar_state="expanded")
-st.title("Kite Connect (Zerodha) — Full Streamlit demo")
+st.title("Invision Lens - Zerodha Connect")
 
 # ---------------------------
 # CONFIG / SECRETS
