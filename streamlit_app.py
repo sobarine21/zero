@@ -1,8 +1,3 @@
-# streamlit_kite_app.py
-# Full-featured Streamlit frontend for Zerodha Kite Connect.
-# Requirements: streamlit, pykiteconnect, pandas
-# Put your Kite credentials in Streamlit secrets under [kite] as api_key, api_secret, redirect_uri
-
 import streamlit as st
 from kiteconnect import KiteConnect
 from kiteconnect import KiteTicker  # websocket ticker
@@ -590,4 +585,4 @@ with tab_debug:
     - If MF / some endpoints methods raise AttributeError, check your pykiteconnect version and refer to docs for exact method names (they map closely to the HTTP endpoints).
     """)
 
-# End of file
+
