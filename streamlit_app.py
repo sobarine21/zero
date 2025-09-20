@@ -5,6 +5,7 @@ import streamlit as st
 from kiteconnect import KiteConnect
 import pandas as pd
 import json
+from datetime import datetime
 
 st.set_page_config(page_title="Kite Connect - Streamlit demo", layout="wide")
 st.title("Kite Connect (Zerodha) — Streamlit demo")
@@ -129,13 +130,44 @@ if "kite_access_token" in st.session_state:
                 st.error(f"Error fetching quote: {e}")
 
         st.markdown("### 📜 Historical data (demo)")
-        hist_symbol = st.text_input("Historical symbol (exchange:tradingsymbol)", value="NSE:INFY")
-        from_date = st.date_input("From date")
-        to_date = st.date_input("To date")
+
+        # Load instrument dump once & cache
+        @st.cache_data
+        def load_instruments():
+            return pd.DataFrame(k.instruments())
+
+        instruments_df = load_instruments()
+
+        hist_symbol = st.text_input("Symbol (tradingsymbol)", value="INFY")
+        hist_exchange = st.selectbox("Exchange", ["NSE", "BSE"], index=0)
+        from_date = st.date_input("From date", datetime(2024, 1, 1))
+        to_date = st.date_input("To date", datetime.now().date())
         interval = st.selectbox("Interval", ["minute", "5minute", "15minute", "30minute", "day", "week", "month"], index=4)
 
         if st.button("Fetch historical"):
-            st.warning("⚠️ Historical data requires instrument_token (numeric). You must fetch instrument dump and map symbol → token.")
+            try:
+                row = instruments_df[
+                    (instruments_df["tradingsymbol"] == hist_symbol.upper()) &
+                    (instruments_df["exchange"] == hist_exchange)
+                ]
+
+                if row.empty:
+                    st.error("❌ Symbol not found in instruments dump. Check tradingsymbol & exchange.")
+                else:
+                    instrument_token = int(row.iloc[0]["instrument_token"])
+                    st.info(f"Using instrument_token: {instrument_token}")
+
+                    hist_data = k.historical_data(
+                        instrument_token=instrument_token,
+                        from_date=from_date,
+                        to_date=to_date,
+                        interval=interval
+                    )
+                    df_hist = pd.DataFrame(hist_data)
+                    st.dataframe(df_hist)
+
+            except Exception as e:
+                st.error(f"Error fetching historical data: {e}")
 
 else:
     st.info("ℹ️ No access token yet. Login via the link above and ensure the redirect URI matches exactly in developer console.")
