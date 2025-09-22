@@ -85,17 +85,17 @@ if "kite_access_token" in st.session_state:
 # Utility: instruments lookup (kept as it's essential for fetching historical data)
 # ---------------------------
 @st.cache_data(show_spinner=False)
-def load_instruments(kite_instance, exchange=None):
+def load_instruments(_kite_instance, exchange=None): # FIX: Added underscore to _kite_instance
     """
     Returns pandas.DataFrame of instrument dump.
     If exchange is None, tries to fetch all instruments (may be large).
     """
     try:
         if exchange:
-            inst = kite_instance.instruments(exchange)
+            inst = _kite_instance.instruments(exchange) # FIX: Used _kite_instance
         else:
             # call without exchange may return full dump
-            inst = kite_instance.instruments()
+            inst = _kite_instance.instruments() # FIX: Used _kite_instance
         df = pd.DataFrame(inst)
         # keep token as int
         if "instrument_token" in df.columns:
@@ -155,7 +155,8 @@ def get_historical(kite_instance, symbol, from_date, to_date, interval="day", ex
         if not token:
             # If not found in loaded DF, try fetching directly from Kite and storing
             st.info(f"Instrument token for {symbol} on {exchange} not found in cache. Attempting to fetch...")
-            all_instruments = load_instruments(kite_instance, exchange)
+            # Pass kite_instance to load_instruments, which now expects _kite_instance
+            all_instruments = load_instruments(kite_instance, exchange) 
             if not all_instruments.empty:
                 st.session_state["instruments_df"] = all_instruments # Update cached DF
                 token = find_instrument_token(all_instruments, symbol, exchange)
@@ -431,6 +432,7 @@ with tab_market:
         with st.expander("Load Instruments for Historical Data Lookup"):
             exchange_for_dump = st.selectbox("Exchange to load instruments for lookup", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0, key="inst_load_exchange")
             if st.button("Load Instruments Now"):
+                # Pass k to load_instruments, which now expects _kite_instance
                 inst_df = load_instruments(k, exchange_for_dump)
                 st.session_state["instruments_df"] = inst_df
                 if not inst_df.empty:
@@ -808,7 +810,8 @@ with tab_ws:
         # Autoload instruments if not already loaded, for convenience in getting tokens
         if "instruments_df" not in st.session_state or st.session_state["instruments_df"].empty:
             st.info("Loading instruments for NSE to facilitate instrument token lookup for WebSocket.")
-            nse_instruments = load_instruments(k, "NSE")
+            # Pass k to load_instruments, which now expects _kite_instance
+            nse_instruments = load_instruments(k, "NSE") 
             if not nse_instruments.empty:
                 st.session_state["instruments_df"] = nse_instruments
                 st.success(f"Loaded {len(nse_instruments)} instruments for NSE.")
@@ -958,6 +961,7 @@ with tab_inst:
     inst_exchange = st.selectbox("Select Exchange to Load Instruments", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0)
     if st.button("Load Instruments for Selected Exchange (cached)"):
         try:
+            # Pass k to load_instruments, which now expects _kite_instance
             df = load_instruments(k, inst_exchange)
             st.session_state["instruments_df"] = df
             if not df.empty:
