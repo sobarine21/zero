@@ -36,7 +36,7 @@ except Exception:
 
 if not API_KEY or not API_SECRET or not REDIRECT_URI:
     st.error("Missing Kite credentials in Streamlit secrets. Add [kite] api_key, api_secret and redirect_uri in `.streamlit/secrets.toml`.")
-    st.info("Example `secrets.toml`:\n```toml\n[kite]\napi_key=\"YOUR_API_KEY\"\napi_secret=\"YOUR_API_SECRET\"\nredirect_uri=\"http://localhost:8501\"\n```")
+    st.info("Example `secrets.toml`:\n```toml\n[kite]\napi_key=\"YOUR_API_KEY\"\napi_secret=\"YOUR_KITE_SECRET\"\nredirect_uri=\"http://localhost:8501\"\n```")
     st.stop()
 
 # ---------------------------
@@ -69,7 +69,7 @@ if request_token and "kite_access_token" not in st.session_state:
         st.session_state["kite_login_response"] = data
         st.sidebar.success("Access token obtained and stored in session.")
         st.sidebar.download_button("⬇️ Download token JSON", json.dumps(data, default=str), file_name="kite_token.json")
-        st.experimental_rerun() # Rerun to remove request_token from URL and update UI
+        st.rerun() # FIX: Changed to st.rerun()
     except Exception as e:
         st.sidebar.error(f"Failed to generate session: {e}")
         st.stop()
@@ -182,6 +182,8 @@ def add_indicators(df, sma_short=5, sma_long=20, rsi_window=14, macd_fast=12, ma
     macd_obj = ta.trend.MACD(df['close'], window_fast=macd_fast, window_slow=macd_slow, window_sign=macd_signal)
     df['MACD'] = macd_obj.macd()
     df['MACD_signal'] = macd_obj.macd_signal()
+    # Adding MACD Histogram for visualization
+    df['MACD_hist'] = macd_obj.macd_diff() 
     
     bollinger = ta.volatility.BollingerBands(df['close'], window=bb_window, window_dev=bb_std_dev)
     df['Bollinger_High'] = bollinger.bollinger_hband()
@@ -253,7 +255,7 @@ with st.sidebar:
             for key in list(st.session_state.keys()): # Clear all session state for a clean re-run
                 st.session_state.pop(key)
             st.success("Logged out. Please login again.")
-            st.experimental_rerun()
+            st.rerun() # FIX: Changed to st.rerun()
     else:
         st.info("Not authenticated yet. Please login using the link above.")
 
@@ -425,7 +427,7 @@ with tab_portfolio:
                     {"Category": "Equity - Available", "Value": st.session_state["margins_data"].get('equity', {}).get('available', {}).get('live_balance', 0)},
                     {"Category": "Equity - Used", "Value": st.session_state["margins_data"].get('equity', {}).get('utilised', {}).get('overall', 0)},
                     {"Category": "Commodity - Available", "Value": st.session_state["margins_data"].get('commodity', {}).get('available', {}).get('live_balance', 0)},
-                    {"Category": "Commodity - Used", "Value": st.session_state["margins_data"].get('commodity', {}).get('utilised', {}).get('overall', 0)},
+                    {"Category": "Commodity - Used", "Value": st.session_state["margins_data'].get('commodity', {}).get('utilised', {}).get('overall', 0)},
                 ])
                 margins_df["Value"] = margins_df["Value"].apply(lambda x: f"₹{x:,.2f}")
                 st.dataframe(margins_df, use_container_width=True)
@@ -775,7 +777,8 @@ with tab_ml:
 
                     fig_indicators.add_trace(go.Scatter(x=df_plot.index, y=df_plot['MACD'], mode='lines', name='MACD Line', line=dict(color='blue')), row=3, col=1)
                     fig_indicators.add_trace(go.Scatter(x=df_plot.index, y=df_plot['MACD_signal'], mode='lines', name='Signal Line', line=dict(color='red')), row=3, col=1)
-                    fig_indicators.add_trace(go.Bar(x=df_plot.index, y=macd_obj.macd_diff(), name='MACD Histogram', marker_color='gray'), row=3, col=1)
+                    # Use MACD_hist for histogram bars
+                    fig_indicators.add_trace(go.Bar(x=df_plot.index, y=df_plot['MACD_hist'], name='MACD Histogram', marker_color='gray'), row=3, col=1)
 
                     fig_indicators.add_trace(go.Scatter(x=df_plot.index, y=df_plot['Bollinger_Width'], mode='lines', name='BB Width', line=dict(color='purple')), row=4, col=1)
 
@@ -806,7 +809,7 @@ with tab_ml:
                     ml_data_processed['target'] = ml_data_processed[target_column].shift(-1)
                     ml_data_processed.dropna(subset=['target'], inplace=True)
                     
-                    features = [col for col in ml_data_processed.columns if col not in ['open', 'high', 'low', 'close', 'volume', 'target']]
+                    features = [col for col in ml_data_processed.columns if col not in ['open', 'high', 'low', 'close', 'volume', 'target', 'MACD_hist']] # Exclude MACD_hist if not a direct feature
                     
                     # Allow user to select features
                     selected_features = st.multiselect("Select Features for Model (recommended: use all indicators)", 
@@ -903,7 +906,7 @@ with tab_ml:
                 st.write(f"**Features used:** {', '.join(ml_features)}")
 
                 if not X_test_ml.empty:
-                    latest_features_df = X_test_ml.iloc[[-1]] # Simulate the latest available features
+                    latest_features_df = X_test_ml.iloc[[-1]][ml_features] # Simulate the latest available features
                     if st.button("Simulate Next Period Prediction"):
                         with st.spinner("Generating simulated prediction..."):
                             simulated_prediction = model.predict(latest_features_df)[0]
@@ -927,7 +930,12 @@ with tab_ml:
                     df_backtest['SMA_Short_BT'] = ta.trend.sma_indicator(df_backtest['close'], window=short_ma)
                     df_backtest['SMA_Long_BT'] = ta.trend.sma_indicator(df_backtest['close'], window=long_ma)
                     df_backtest['Signal'] = 0.0
-                    df_backtest['Signal'][short_ma:] = np.where(df_backtest['SMA_Short_BT'][short_ma:] > df_backtest['SMA_Long_BT'][short_ma:], 1.0, 0.0)
+                    
+                    # Ensure alignment and sufficient data for comparison
+                    # Use .loc to avoid SettingWithCopyWarning
+                    df_backtest.loc[df_backtest.index[short_ma:], 'Signal'] = np.where(
+                        df_backtest['SMA_Short_BT'][short_ma:] > df_backtest['SMA_Long_BT'][short_ma:], 1.0, 0.0
+                    )
                     df_backtest['Position'] = df_backtest['Signal'].diff()
 
                     # Calculate strategy returns
@@ -1307,6 +1315,8 @@ with tab_multi_asset:
                         df["date"] = pd.to_datetime(df["date"])
                         df.set_index("date", inplace=True)
                         df.sort_index(inplace=True)
+                        df['close'] = pd.to_numeric(df['close'], errors='coerce') # Ensure close is numeric
+                        df.dropna(subset=['close'], inplace=True)
                         all_historical_data[symbol] = df['close']
                     else:
                         st.warning(f"No historical data found for {symbol}. Skipping.")
