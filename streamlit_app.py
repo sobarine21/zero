@@ -69,7 +69,7 @@ if request_token and "kite_access_token" not in st.session_state:
         st.session_state["kite_login_response"] = data
         st.sidebar.success("Access token obtained and stored in session.")
         st.sidebar.download_button("⬇️ Download token JSON", json.dumps(data, default=str), file_name="kite_token.json")
-        st.rerun() # FIX: Changed to st.rerun()
+        st.rerun()
     except Exception as e:
         st.sidebar.error(f"Failed to generate session: {e}")
         st.stop()
@@ -255,7 +255,7 @@ with st.sidebar:
             for key in list(st.session_state.keys()): # Clear all session state for a clean re-run
                 st.session_state.pop(key)
             st.success("Logged out. Please login again.")
-            st.rerun() # FIX: Changed to st.rerun()
+            st.rerun()
     else:
         st.info("Not authenticated yet. Please login using the link above.")
 
@@ -427,7 +427,7 @@ with tab_portfolio:
                     {"Category": "Equity - Available", "Value": st.session_state["margins_data"].get('equity', {}).get('available', {}).get('live_balance', 0)},
                     {"Category": "Equity - Used", "Value": st.session_state["margins_data"].get('equity', {}).get('utilised', {}).get('overall', 0)},
                     {"Category": "Commodity - Available", "Value": st.session_state["margins_data"].get('commodity', {}).get('available', {}).get('live_balance', 0)},
-                    {"Category": "Commodity - Used", "Value": st.session_state["margins_data'].get('commodity', {}).get('utilised', {}).get('overall', 0)},
+                    {"Category": "Commodity - Used", "Value": st.session_state["margins_data"].get('commodity', {}).get('utilised', {}).get('overall', 0)}, # FIX: Corrected the quote
                 ])
                 margins_df["Value"] = margins_df["Value"].apply(lambda x: f"₹{x:,.2f}")
                 st.dataframe(margins_df, use_container_width=True)
@@ -975,30 +975,34 @@ with tab_ml:
                         st.plotly_chart(fig_backtest, use_container_width=True)
 
                         # Visualize trades
-                        fig_trades = go.Figure(data=[go.Candlestick(x=df_backtest.index,
+                        fig_trades = make_subplots(rows=1, cols=1, shared_xaxes=True, 
+                                                   vertical_spacing=0.03, 
+                                                   specs=[[{"secondary_y": False}]])
+                        
+                        fig_trades.add_trace(go.Candlestick(x=df_backtest.index,
                                                                     open=df_backtest['open'], high=df_backtest['high'],
                                                                     low=df_backtest['low'], close=df_backtest['close'],
-                                                                    name='Candlestick')])
+                                                                    name='Candlestick'), row=1, col=1)
                         
-                        fig_trades.add_trace(go.Scatter(x=df_backtest.index, y=df_backtest['SMA_Short_BT'], mode='lines', name=f'SMA {short_ma}', line=dict(color='orange', width=1)))
-                        fig_trades.add_trace(go.Scatter(x=df_backtest.index, y=df_backtest['SMA_Long_BT'], mode='lines', name=f'SMA {long_ma}', line=dict(color='purple', width=1)))
+                        fig_trades.add_trace(go.Scatter(x=df_backtest.index, y=df_backtest['SMA_Short_BT'], mode='lines', name=f'SMA {short_ma}', line=dict(color='orange', width=1)), row=1, col=1)
+                        fig_trades.add_trace(go.Scatter(x=df_backtest.index, y=df_backtest['SMA_Long_BT'], mode='lines', name=f'SMA {long_ma}', line=dict(color='purple', width=1)), row=1, col=1)
 
                         # Plot buy signals
                         fig_trades.add_trace(go.Scatter(
                             x=df_backtest.index[df_backtest['Position'] == 1],
                             y=df_backtest['close'][df_backtest['Position'] == 1],
                             mode='markers',
-                            marker=dict(symbol='triangle-up', size=10, color='green'),
+                            marker=dict(symbol='triangle-up', size=10, color='green', line=dict(width=1, color='DarkSlateGrey')),
                             name='Buy Signal'
-                        ))
+                        ), row=1, col=1)
                         # Plot sell signals
                         fig_trades.add_trace(go.Scatter(
                             x=df_backtest.index[df_backtest['Position'] == -1],
                             y=df_backtest['close'][df_backtest['Position'] == -1],
                             mode='markers',
-                            marker=dict(symbol='triangle-down', size=10, color='red'),
+                            marker=dict(symbol='triangle-down', size=10, color='red', line=dict(width=1, color='DarkSlateGrey')),
                             name='Sell Signal'
-                        ))
+                        ), row=1, col=1)
                         fig_trades.update_layout(title=f'SMA Crossover Trading Signals for {last_symbol}',
                                                   xaxis_rangeslider_visible=False,
                                                   template="plotly_white", height=500)
