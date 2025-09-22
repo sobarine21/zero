@@ -36,7 +36,7 @@ except Exception:
 
 if not API_KEY or not API_SECRET or not REDIRECT_URI:
     st.error("Missing Kite credentials in Streamlit secrets. Add [kite] api_key, api_secret and redirect_uri in `.streamlit/secrets.toml`.")
-    st.info("Example `secrets.toml`:\n```toml\n[kite]\napi_key=\"YOUR_API_KEY\"\napi_secret=\"YOUR_KITE_SECRET\"\nredirect_uri=\"http://localhost:8501\"\n```")
+    st.info("Example `secrets.toml`:\n```toml\n[kite]\napi_key=\"YOUR_KITE_API_KEY\"\napi_secret=\"YOUR_KITE_SECRET\"\nredirect_uri=\"http://localhost:8501\"\n```")
     st.stop()
 
 # ---------------------------
@@ -313,19 +313,25 @@ with tab_dashboard:
                 nifty_ltp_data = get_ltp_price(k, "NIFTY 50", "NSE")
                 if nifty_ltp_data and "NSE:NIFTY 50" in nifty_ltp_data:
                     nifty_ltp = nifty_ltp_data["NSE:NIFTY 50"]["last_price"]
-                    nifty_change = nifty_ltp_data["NSE:NIFTY 50"]["change"]
+                    # Safely get 'change' key
+                    nifty_change = nifty_ltp_data["NSE:NIFTY 50"].get("change", 0.0) 
                     st.metric("NIFTY 50 (LTP)", f"₹{nifty_ltp:,.2f}", delta=f"{nifty_change:.2f}%")
                 else:
-                    st.warning("Could not fetch NIFTY 50 LTP.")
+                    st.warning("Could not fetch NIFTY 50 LTP. Check symbol or API status.")
             except Exception as e:
                 st.warning(f"Error fetching NIFTY 50 data: {e}")
 
             # Optionally, show historical chart for NIFTY
-            if st.session_state.get("historical_data_NIFTY") is None:
+            # Check if historical_data_NIFTY is an empty DataFrame rather than just None
+            if st.session_state.get("historical_data_NIFTY", pd.DataFrame()).empty: # FIX: Robust check for empty DataFrame
                 if st.button("Load NIFTY 50 Historical for Chart"):
                     with st.spinner("Fetching NIFTY 50 historical data..."):
                         nifty_hist = get_historical(k, "NIFTY 50", datetime.now().date() - timedelta(days=180), datetime.now().date(), "day", "NSE")
-                        if not nifty_hist.get("error"):
+                        
+                        # FIX: Check for error in the dictionary-like structure
+                        if isinstance(nifty_hist, dict) and "error" in nifty_hist:
+                             st.error(f"Error fetching NIFTY 50 historical: {nifty_hist['error']}")
+                        elif isinstance(nifty_hist, list) and nifty_hist: # If successful, it's a list of dicts
                             nifty_df = pd.DataFrame(nifty_hist)
                             nifty_df["date"] = pd.to_datetime(nifty_df["date"])
                             nifty_df.set_index("date", inplace=True)
@@ -333,9 +339,10 @@ with tab_dashboard:
                             st.session_state["historical_data_NIFTY"] = nifty_df
                             st.success("NIFTY 50 historical data loaded.")
                         else:
-                            st.error(f"Error fetching NIFTY 50 historical: {nifty_hist['error']}")
+                            st.warning("No historical data returned for NIFTY 50.")
+                            st.session_state["historical_data_NIFTY"] = pd.DataFrame() # Ensure it's set to empty DF
             
-            if st.session_state.get("historical_data_NIFTY") is not None:
+            if st.session_state.get("historical_data_NIFTY") is not None and not st.session_state["historical_data_NIFTY"].empty:
                 nifty_df = st.session_state["historical_data_NIFTY"]
                 fig_nifty = go.Figure(data=[go.Candlestick(x=nifty_df.index,
                                                         open=nifty_df['open'],
@@ -351,7 +358,8 @@ with tab_dashboard:
 
         with col3:
             st.subheader("Quick Performance")
-            if st.session_state.get("historical_data") is not None:
+            # FIX: Ensure last_fetched_symbol exists before trying to access
+            if "last_fetched_symbol" in st.session_state and st.session_state.get("historical_data") is not None and not st.session_state["historical_data"].empty:
                 last_symbol = st.session_state["last_fetched_symbol"]
                 returns = st.session_state["historical_data"]["close"].pct_change().dropna() * 100
                 if not returns.empty:
@@ -629,13 +637,24 @@ with tab_market:
 
         with st.expander("Load Instruments for Symbol Lookup (Required)"):
             exchange_for_lookup = st.selectbox("Exchange to load instruments for lookup", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0, key="hist_inst_load_exchange")
-            if st.button("Load Instruments into Cache"):
-                inst_df = load_instruments(k, exchange_for_lookup)
-                st.session_state["instruments_df"] = inst_df
-                if not inst_df.empty:
-                    st.success(f"Loaded {len(inst_df)} instruments for {exchange_for_lookup}.")
-                else:
-                    st.warning(f"Could not load instruments for {exchange_for_lookup}. Check API key and permissions.")
+            # FIX: Robust check for empty DataFrame for instruments_df
+            if st.button("Load Instruments into Cache") or st.session_state.get("instruments_df", pd.DataFrame()).empty:
+                if st.button("Load Instruments into Cache"): # Only load explicitly if button clicked
+                    inst_df = load_instruments(k, exchange_for_lookup)
+                    st.session_state["instruments_df"] = inst_df
+                    if not inst_df.empty:
+                        st.success(f"Loaded {len(inst_df)} instruments for {exchange_for_lookup}.")
+                    else:
+                        st.warning(f"Could not load instruments for {exchange_for_lookup}. Check API key and permissions.")
+                elif st.session_state.get("instruments_df", pd.DataFrame()).empty and k: # Autoload on initial load if empty and authenticated
+                     with st.spinner(f"Auto-loading instruments for {exchange_for_lookup}..."):
+                        inst_df = load_instruments(k, exchange_for_lookup)
+                        st.session_state["instruments_df"] = inst_df
+                        if not inst_df.empty:
+                            st.success(f"Auto-loaded {len(inst_df)} instruments for {exchange_for_lookup}.")
+                        else:
+                            st.warning(f"Could not auto-load instruments for {exchange_for_lookup}. Manual load might be needed.")
+
 
         col_hist_controls, col_hist_plot = st.columns([1, 2])
 
@@ -651,32 +670,33 @@ with tab_market:
             interval = st.selectbox("Interval", ["minute", "5minute", "15minute", "30minute", "day", "week", "month"], index=4)
 
             if st.button("Fetch Historical Data"):
-                if "instruments_df" not in st.session_state or st.session_state["instruments_df"].empty:
+                # FIX: Robust check for empty DataFrame
+                if st.session_state.get("instruments_df", pd.DataFrame()).empty:
                     st.error("Please load instruments first from the expander above to enable symbol lookup.")
                 else:
                     with st.spinner(f"Fetching {interval} historical data for {hist_symbol}..."):
                         hist_data = get_historical(k, hist_symbol, from_date, to_date, interval, hist_exchange)
                         
-                        if "error" in hist_data:
+                        # FIX: Check for error in the dictionary-like structure
+                        if isinstance(hist_data, dict) and "error" in hist_data:
                             st.error(f"Historical fetch failed: {hist_data['error']}")
                             if "Insufficient permission" in hist_data['error']:
                                 st.warning("Your Zerodha API key might require an active subscription for historical data.")
                             st.session_state["historical_data"] = pd.DataFrame() # Clear previous data
                             st.session_state["last_fetched_symbol"] = None
-                        else:
+                        elif isinstance(hist_data, list) and hist_data: # If successful, it's a list of dicts
                             df = pd.DataFrame(hist_data)
-                            if not df.empty:
-                                df["date"] = pd.to_datetime(df["date"])
-                                df.set_index("date", inplace=True)
-                                df.sort_index(inplace=True)
-                                st.session_state["historical_data"] = df # Store for ML analysis
-                                st.session_state["last_fetched_symbol"] = hist_symbol
-                                st.success(f"Successfully fetched {len(df)} records for {hist_symbol} ({interval}).")
-                                st.dataframe(df.head()) # Show a preview
-                            else:
-                                st.info(f"No historical data returned for {hist_symbol} for the selected period.")
-                                st.session_state["historical_data"] = pd.DataFrame()
-                                st.session_state["last_fetched_symbol"] = None
+                            df["date"] = pd.to_datetime(df["date"])
+                            df.set_index("date", inplace=True)
+                            df.sort_index(inplace=True)
+                            st.session_state["historical_data"] = df # Store for ML analysis
+                            st.session_state["last_fetched_symbol"] = hist_symbol
+                            st.success(f"Successfully fetched {len(df)} records for {hist_symbol} ({interval}).")
+                            st.dataframe(df.head()) # Show a preview
+                        else: # No data returned, but no explicit error dict
+                            st.info(f"No historical data returned for {hist_symbol} for the selected period.")
+                            st.session_state["historical_data"] = pd.DataFrame()
+                            st.session_state["last_fetched_symbol"] = None
 
         with col_hist_plot:
             if st.session_state.get("historical_data") is not None and not st.session_state["historical_data"].empty:
@@ -808,7 +828,7 @@ with tab_ml:
                     ml_data_processed['target'] = ml_data_processed[target_column].shift(-1)
                     ml_data_processed.dropna(subset=['target'], inplace=True)
                     
-                    features = [col for col in ml_data_processed.columns if col not in ['open', 'high', 'low', 'close', 'volume', 'target', 'MACD_hist']]
+                    features = [col for col in ml_data_processed.columns if col not in ['open', 'high', 'low', 'close', 'volume', 'target', 'MACD_hist']] # Exclude MACD_hist if not a direct feature
                     
                     selected_features = st.multiselect("Select Features for Model (recommended: use all indicators)", 
                                                         options=features, 
@@ -829,7 +849,7 @@ with tab_ml:
                             
                             st.info(f"Training data: {len(X_train)} samples, Testing data: {len(X_test)} samples")
 
-                            if st.button(f"Train {model_type_selected} Model"): # Use model_type_selected
+                            if st.button(f"Train {model_type_selected} Model"):
                                 if len(X_train) == 0 or len(X_test) == 0:
                                     st.error("Insufficient data for training or testing after split. Adjust test size or fetch more data.")
                                 else:
@@ -852,11 +872,12 @@ with tab_ml:
                                         st.session_state["y_pred"] = y_pred
                                         st.session_state["X_test_ml"] = X_test
                                         st.session_state["ml_features"] = selected_features
-                                        st.session_state["ml_model_type"] = model_type_selected # FIX: Changed to model_type_selected
+                                        st.session_state["ml_model_type"] = model_type_selected
                                         st.success(f"{model_type_selected} Model Trained Successfully!")
                                         
                 with col_ml_output:
-                    if st.session_state.get("ml_model") and st.session_state.get("y_test") is not None:
+                    # FIX: Safely check if these keys exist before accessing
+                    if st.session_state.get("ml_model") is not None and st.session_state.get("y_test") is not None and st.session_state.get("y_pred") is not None:
                         st.markdown("##### Model Performance Metrics")
                         st.write(f"**Model Type:** {st.session_state.get('ml_model_type', 'N/A')}")
                         st.metric("Mean Squared Error (MSE)", f"{mean_squared_error(st.session_state['y_test'], st.session_state['y_pred']):.4f}")
@@ -876,7 +897,7 @@ with tab_ml:
                         if st.session_state.get("ml_model_type") in ["Random Forest Regressor", "LightGBM Regressor"]:
                             st.markdown("##### Feature Importance")
                             model = st.session_state["ml_model"]
-                            features = st.session_state["ml_features"]
+                            features = st.session_state.get("ml_features") # FIX: Safely get features
                             if hasattr(model, 'feature_importances_') and features: # Check if attribute exists and features list is not empty
                                 importance = model.feature_importances_
                                 feature_importance_df = pd.DataFrame({'Feature': features, 'Importance': importance}).sort_values(by='Importance', ascending=False)
@@ -892,7 +913,7 @@ with tab_ml:
                                                            height=400, template="plotly_white")
                                 st.plotly_chart(fig_feat_imp, use_container_width=True)
                             else:
-                                st.info(f"Feature importance not available for {st.session_state['ml_model_type']} or no features selected.")
+                                st.info(f"Feature importance not available for {st.session_state.get('ml_model_type', 'selected model')} or no features selected.")
 
 
             st.subheader(f"3. Real-time Price Prediction (Simulated for {last_symbol})")
@@ -901,10 +922,10 @@ with tab_ml:
             if st.session_state.get("ml_model") and st.session_state.get("X_test_ml") is not None:
                 model = st.session_state["ml_model"]
                 X_test_ml = st.session_state["X_test_ml"]
-                ml_features = st.session_state["ml_features"]
+                ml_features = st.session_state.get("ml_features") # FIX: Safely get features
 
                 st.write(f"**Model trained:** {st.session_state.get('ml_model_type', 'N/A')}")
-                st.write(f"**Features used:** {', '.join(ml_features)}")
+                st.write(f"**Features used:** {', '.join(ml_features) if ml_features else 'None'}") # FIX: Handle empty features
 
                 if not X_test_ml.empty and ml_features: # Ensure features exist
                     latest_features_df = X_test_ml.iloc[[-1]][ml_features] # Simulate the latest available features
@@ -1225,9 +1246,10 @@ with tab_performance:
                 if st.button("Fetch & Compare Benchmark"):
                     with st.spinner(f"Fetching {benchmark_symbol} data..."):
                         try:
+                            # FIX: Access 'Close' column for benchmark data
                             benchmark_data = yf.download(benchmark_symbol, start=historical_data.index.min().strftime('%Y-%m-%d'), end=historical_data.index.max().strftime('%Y-%m-%d'))
-                            if not benchmark_data.empty:
-                                benchmark_returns = benchmark_data['Adj Close'].pct_change().dropna() * 100
+                            if not benchmark_data.empty and 'Close' in benchmark_data.columns:
+                                benchmark_returns = benchmark_data['Close'].pct_change().dropna() * 100 # FIX: Used 'Close'
                                 # Align dates
                                 common_dates = returns_series.index.intersection(benchmark_returns.index)
                                 returns_series_aligned = returns_series.loc[common_dates]
@@ -1265,7 +1287,7 @@ with tab_performance:
                                 else:
                                     st.warning("No common historical data points with benchmark to compare.")
                             else:
-                                st.warning(f"Could not fetch benchmark data for {benchmark_symbol}. Check symbol or date range.")
+                                st.warning(f"Could not fetch benchmark data for {benchmark_symbol} or 'Close' column not found. Check symbol or date range.")
                         except Exception as e:
                             st.error(f"Error fetching benchmark data: {e}")
 
@@ -1300,7 +1322,8 @@ with tab_multi_asset:
         to_date_multi = st.date_input("To Date", value=default_to_date_multi, key="to_dt_multi")
 
         if st.button("Fetch Multi-Asset Data & Analyze"):
-            if not st.session_state.get("instruments_df"):
+            # FIX: Robust check for empty DataFrame
+            if st.session_state.get("instruments_df", pd.DataFrame()).empty:
                 st.warning("Please load instruments in 'Market & Historical' or 'Instruments Utils' tab first.")
                 st.stop()
             
@@ -1312,9 +1335,10 @@ with tab_multi_asset:
                 status_text.text(f"Fetching historical data for {symbol} ({i+1}/{len(symbols_to_analyze)})...")
                 hist_data = get_historical(k, symbol, from_date_multi, to_date_multi, multi_asset_interval, multi_asset_exchange)
                 
-                if "error" in hist_data:
+                # FIX: Check for error in the dictionary-like structure
+                if isinstance(hist_data, dict) and "error" in hist_data:
                     st.error(f"Error fetching data for {symbol}: {hist_data['error']}")
-                else:
+                elif isinstance(hist_data, list) and hist_data: # If successful, it's a list of dicts
                     df = pd.DataFrame(hist_data)
                     if not df.empty:
                         df["date"] = pd.to_datetime(df["date"])
@@ -1393,7 +1417,8 @@ with tab_ws:
 
         with st.expander("Lookup Instrument Token for WebSocket Subscription"):
             # Autoload instruments if not already loaded, for convenience in getting tokens
-            if "instruments_df" not in st.session_state or st.session_state["instruments_df"].empty:
+            # FIX: Robust check for empty DataFrame
+            if st.session_state.get("instruments_df", pd.DataFrame()).empty:
                 st.info("Loading instruments for NSE to facilitate instrument token lookup for WebSocket.")
                 nse_instruments = load_instruments(k, "NSE") 
                 if not nse_instruments.empty:
@@ -1579,6 +1604,7 @@ with tab_inst:
     st.markdown("Find instrument tokens, which are essential for fetching historical data or subscribing to live market data.")
     
     inst_exchange = st.selectbox("Select Exchange to Load Instruments", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0)
+    # FIX: Robust check for empty DataFrame
     if st.button("Load Instruments for Selected Exchange (cached)", help="Fetching instruments can take a moment, especially for large exchanges. Data is cached."):
         try:
             df = load_instruments(k, inst_exchange)
