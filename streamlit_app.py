@@ -427,7 +427,7 @@ with tab_portfolio:
                     {"Category": "Equity - Available", "Value": st.session_state["margins_data"].get('equity', {}).get('available', {}).get('live_balance', 0)},
                     {"Category": "Equity - Used", "Value": st.session_state["margins_data"].get('equity', {}).get('utilised', {}).get('overall', 0)},
                     {"Category": "Commodity - Available", "Value": st.session_state["margins_data"].get('commodity', {}).get('available', {}).get('live_balance', 0)},
-                    {"Category": "Commodity - Used", "Value": st.session_state["margins_data"].get('commodity', {}).get('utilised', {}).get('overall', 0)}, # FIX: Corrected the quote
+                    {"Category": "Commodity - Used", "Value": st.session_state["margins_data"].get('commodity', {}).get('utilised', {}).get('overall', 0)},
                 ])
                 margins_df["Value"] = margins_df["Value"].apply(lambda x: f"₹{x:,.2f}")
                 st.dataframe(margins_df, use_container_width=True)
@@ -801,17 +801,15 @@ with tab_ml:
 
                 col_ml_controls, col_ml_output = st.columns(2)
                 with col_ml_controls:
-                    model_type = st.selectbox("Select ML Model", ["Linear Regression", "Random Forest Regressor", "LightGBM Regressor"], key="ml_model_type")
+                    model_type_selected = st.selectbox("Select ML Model", ["Linear Regression", "Random Forest Regressor", "LightGBM Regressor"], key="ml_model_type_selector") # Renamed key
                     target_column = st.selectbox("Select Target Variable", ["close"], help="Currently, only 'close' price is supported as target.", key="ml_target_col")
                     
-                    # Shift target for prediction: predicting next period's close price
                     ml_data_processed = ml_data.copy()
                     ml_data_processed['target'] = ml_data_processed[target_column].shift(-1)
                     ml_data_processed.dropna(subset=['target'], inplace=True)
                     
-                    features = [col for col in ml_data_processed.columns if col not in ['open', 'high', 'low', 'close', 'volume', 'target', 'MACD_hist']] # Exclude MACD_hist if not a direct feature
+                    features = [col for col in ml_data_processed.columns if col not in ['open', 'high', 'low', 'close', 'volume', 'target', 'MACD_hist']]
                     
-                    # Allow user to select features
                     selected_features = st.multiselect("Select Features for Model (recommended: use all indicators)", 
                                                         options=features, 
                                                         default=features,
@@ -831,36 +829,36 @@ with tab_ml:
                             
                             st.info(f"Training data: {len(X_train)} samples, Testing data: {len(X_test)} samples")
 
-                            if st.button(f"Train {model_type} Model"):
+                            if st.button(f"Train {model_type_selected} Model"): # Use model_type_selected
                                 if len(X_train) == 0 or len(X_test) == 0:
                                     st.error("Insufficient data for training or testing after split. Adjust test size or fetch more data.")
                                 else:
                                     model = None
-                                    if model_type == "Linear Regression":
+                                    if model_type_selected == "Linear Regression":
                                         model = LinearRegression()
-                                    elif model_type == "Random Forest Regressor":
+                                    elif model_type_selected == "Random Forest Regressor":
                                         model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
-                                    elif model_type == "LightGBM Regressor":
+                                    elif model_type_selected == "LightGBM Regressor":
                                         model = lgb.LGBMRegressor(n_estimators=100, random_state=42, n_jobs=-1)
 
                                     if model:
-                                        with st.spinner(f"Training {model_type} model... this may take a moment."):
+                                        with st.spinner(f"Training {model_type_selected} model... this may take a moment."):
                                             model.fit(X_train, y_train)
                                             y_pred = model.predict(X_test)
 
+                                        # Consolidate session state assignments
                                         st.session_state["ml_model"] = model
                                         st.session_state["y_test"] = y_test
                                         st.session_state["y_pred"] = y_pred
                                         st.session_state["X_test_ml"] = X_test
                                         st.session_state["ml_features"] = selected_features
-                                        st.session_state["ml_model_type"] = model_type
-
-                                        st.success(f"{model_type} Model Trained Successfully!")
+                                        st.session_state["ml_model_type"] = model_type_selected # FIX: Changed to model_type_selected
+                                        st.success(f"{model_type_selected} Model Trained Successfully!")
                                         
                 with col_ml_output:
                     if st.session_state.get("ml_model") and st.session_state.get("y_test") is not None:
                         st.markdown("##### Model Performance Metrics")
-                        st.write(f"**Model Type:** {st.session_state['ml_model_type']}")
+                        st.write(f"**Model Type:** {st.session_state.get('ml_model_type', 'N/A')}")
                         st.metric("Mean Squared Error (MSE)", f"{mean_squared_error(st.session_state['y_test'], st.session_state['y_pred']):.4f}")
                         st.metric("R2 Score", f"{r2_score(st.session_state['y_test'], st.session_state['y_pred']):.4f}")
 
@@ -869,29 +867,32 @@ with tab_ml:
                         fig_pred = go.Figure()
                         fig_pred.add_trace(go.Scatter(x=pred_df.index, y=pred_df['Actual'], mode='lines', name='Actual Price', line=dict(color='blue')))
                         fig_pred.add_trace(go.Scatter(x=pred_df.index, y=pred_df['Predicted'], mode='lines', name='Predicted Price', line=dict(color='red', dash='dot')))
-                        fig_pred.update_layout(title_text=f"{st.session_state['ml_model_type']} Actual vs. Predicted Prices on Test Set for {last_symbol}", 
+                        fig_pred.update_layout(title_text=f"{st.session_state.get('ml_model_type', 'Model')} Actual vs. Predicted Prices on Test Set for {last_symbol}", 
                                             height=500, xaxis_title="Date", yaxis_title="Price",
                                             template="plotly_white", hovermode="x unified")
                         st.plotly_chart(fig_pred, use_container_width=True)
 
                         # Feature Importance for tree-based models
-                        if st.session_state["ml_model_type"] in ["Random Forest Regressor", "LightGBM Regressor"]:
+                        if st.session_state.get("ml_model_type") in ["Random Forest Regressor", "LightGBM Regressor"]:
                             st.markdown("##### Feature Importance")
                             model = st.session_state["ml_model"]
                             features = st.session_state["ml_features"]
-                            importance = model.feature_importances_
-                            feature_importance_df = pd.DataFrame({'Feature': features, 'Importance': importance}).sort_values(by='Importance', ascending=False)
-                            
-                            fig_feat_imp = go.Figure(go.Bar(
-                                x=feature_importance_df['Importance'],
-                                y=feature_importance_df['Feature'],
-                                orientation='h',
-                                marker_color='skyblue'
-                            ))
-                            fig_feat_imp.update_layout(title_text=f"Feature Importance for {st.session_state['ml_model_type']}",
-                                                       yaxis_title="Feature", xaxis_title="Importance Score",
-                                                       height=400, template="plotly_white")
-                            st.plotly_chart(fig_feat_imp, use_container_width=True)
+                            if hasattr(model, 'feature_importances_') and features: # Check if attribute exists and features list is not empty
+                                importance = model.feature_importances_
+                                feature_importance_df = pd.DataFrame({'Feature': features, 'Importance': importance}).sort_values(by='Importance', ascending=False)
+                                
+                                fig_feat_imp = go.Figure(go.Bar(
+                                    x=feature_importance_df['Importance'],
+                                    y=feature_importance_df['Feature'],
+                                    orientation='h',
+                                    marker_color='skyblue'
+                                ))
+                                fig_feat_imp.update_layout(title_text=f"Feature Importance for {st.session_state['ml_model_type']}",
+                                                           yaxis_title="Feature", xaxis_title="Importance Score",
+                                                           height=400, template="plotly_white")
+                                st.plotly_chart(fig_feat_imp, use_container_width=True)
+                            else:
+                                st.info(f"Feature importance not available for {st.session_state['ml_model_type']} or no features selected.")
 
 
             st.subheader(f"3. Real-time Price Prediction (Simulated for {last_symbol})")
@@ -902,10 +903,10 @@ with tab_ml:
                 X_test_ml = st.session_state["X_test_ml"]
                 ml_features = st.session_state["ml_features"]
 
-                st.write(f"**Model trained:** {st.session_state['ml_model_type']}")
+                st.write(f"**Model trained:** {st.session_state.get('ml_model_type', 'N/A')}")
                 st.write(f"**Features used:** {', '.join(ml_features)}")
 
-                if not X_test_ml.empty:
+                if not X_test_ml.empty and ml_features: # Ensure features exist
                     latest_features_df = X_test_ml.iloc[[-1]][ml_features] # Simulate the latest available features
                     if st.button("Simulate Next Period Prediction"):
                         with st.spinner("Generating simulated prediction..."):
@@ -913,7 +914,7 @@ with tab_ml:
                         st.success(f"Simulated **next period** close price prediction: **₹{simulated_prediction:.2f}**")
                         st.info("This is a simulation using the last available test data point's features. In a live trading system, these features would be derived from fresh, real-time market data (e.g., from the WebSocket feed aggregated into candles).")
                 else:
-                    st.warning("No test data available for simulation. Please train the model first.")
+                    st.warning("No test data or features available for simulation. Please train the model first.")
             else:
                 st.info("Train a machine learning model first to see a real-time prediction simulation.")
             
@@ -1620,4 +1621,5 @@ with tab_inst:
         st.dataframe(df_instruments.head(200), use_container_width=True)
     else:
         st.info("No instruments loaded. Click 'Load Instruments for Selected Exchange' above to fetch.")
-
+```
+81.5s
