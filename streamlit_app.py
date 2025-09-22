@@ -16,6 +16,7 @@ from sklearn.metrics import mean_squared_error, r2_score
 import lightgbm as lgb
 import ta # Technical Analysis library
 import yfinance as yf # For fetching benchmark data for comparison
+import matplotlib.pyplot as plt # FIX: Added matplotlib import for pandas styler
 
 st.set_page_config(page_title="Kite Connect - Advanced Analysis", layout="wide", initial_sidebar_state="expanded")
 st.title("Kite Connect (Zerodha) — Advanced Financial Analysis")
@@ -36,7 +37,7 @@ except Exception:
 
 if not API_KEY or not API_SECRET or not REDIRECT_URI:
     st.error("Missing Kite credentials in Streamlit secrets. Add [kite] api_key, api_secret and redirect_uri in `.streamlit/secrets.toml`.")
-    st.info("Example `secrets.toml`:\n```toml\n[kite]\napi_key=\"YOUR_KITE_API_KEY\"\napi_secret=\"YOUR_KITE_SECRET\"\nredirect_uri=\"http://localhost:8501\"\n```")
+    st.info("Example `secrets.toml`:\n```toml\n[kite]\napi_key=\"YOUR_API_KEY\"\napi_secret=\"YOUR_KITE_SECRET\"\nredirect_uri=\"http://localhost:8501\"\n```")
     st.stop()
 
 # ---------------------------
@@ -898,7 +899,7 @@ with tab_ml:
                             st.markdown("##### Feature Importance")
                             model = st.session_state["ml_model"]
                             features = st.session_state.get("ml_features") # FIX: Safely get features
-                            if hasattr(model, 'feature_importances_') and features: # Check if attribute exists and features list is not empty
+                            if hasattr(model, 'feature_importances_') and features and len(features) == len(model.feature_importances_): # Check if attribute exists and features list is not empty and lengths match
                                 importance = model.feature_importances_
                                 feature_importance_df = pd.DataFrame({'Feature': features, 'Importance': importance}).sort_values(by='Importance', ascending=False)
                                 
@@ -913,7 +914,7 @@ with tab_ml:
                                                            height=400, template="plotly_white")
                                 st.plotly_chart(fig_feat_imp, use_container_width=True)
                             else:
-                                st.info(f"Feature importance not available for {st.session_state.get('ml_model_type', 'selected model')} or no features selected.")
+                                st.info(f"Feature importance not available or mismatch for {st.session_state.get('ml_model_type', 'selected model')}.")
 
 
             st.subheader(f"3. Real-time Price Prediction (Simulated for {last_symbol})")
@@ -927,15 +928,16 @@ with tab_ml:
                 st.write(f"**Model trained:** {st.session_state.get('ml_model_type', 'N/A')}")
                 st.write(f"**Features used:** {', '.join(ml_features) if ml_features else 'None'}") # FIX: Handle empty features
 
-                if not X_test_ml.empty and ml_features: # Ensure features exist
-                    latest_features_df = X_test_ml.iloc[[-1]][ml_features] # Simulate the latest available features
+                if not X_test_ml.empty and ml_features and model is not None: # Ensure features exist and model is trained
+                    # Ensure latest_features_df has the same columns in the same order as ml_features
+                    latest_features_df = X_test_ml.iloc[[-1]][ml_features]
                     if st.button("Simulate Next Period Prediction"):
                         with st.spinner("Generating simulated prediction..."):
                             simulated_prediction = model.predict(latest_features_df)[0]
                         st.success(f"Simulated **next period** close price prediction: **₹{simulated_prediction:.2f}**")
                         st.info("This is a simulation using the last available test data point's features. In a live trading system, these features would be derived from fresh, real-time market data (e.g., from the WebSocket feed aggregated into candles).")
                 else:
-                    st.warning("No test data or features available for simulation. Please train the model first.")
+                    st.warning("No test data, features, or trained model available for simulation. Please train the model first.")
             else:
                 st.info("Train a machine learning model first to see a real-time prediction simulation.")
             
@@ -949,86 +951,89 @@ with tab_ml:
                 long_ma = st.slider("Long MA Window", 20, 200, 50, key="bt_long_ma")
 
                 if st.button("Run Backtest"):
-                    df_backtest['SMA_Short_BT'] = ta.trend.sma_indicator(df_backtest['close'], window=short_ma)
-                    df_backtest['SMA_Long_BT'] = ta.trend.sma_indicator(df_backtest['close'], window=long_ma)
-                    df_backtest['Signal'] = 0.0
-                    
-                    # Ensure alignment and sufficient data for comparison
-                    # Use .loc to avoid SettingWithCopyWarning
-                    df_backtest.loc[df_backtest.index[short_ma:], 'Signal'] = np.where(
-                        df_backtest['SMA_Short_BT'][short_ma:] > df_backtest['SMA_Long_BT'][short_ma:], 1.0, 0.0
-                    )
-                    df_backtest['Position'] = df_backtest['Signal'].diff()
-
-                    # Calculate strategy returns
-                    df_backtest['Strategy_Return'] = df_backtest['Daily_Return'] * df_backtest['Signal'].shift(1)
-                    df_backtest['Cumulative_Strategy_Return'] = (1 + df_backtest['Strategy_Return'] / 100).cumprod() - 1
-                    df_backtest['Cumulative_Buy_Hold_Return'] = (1 + df_backtest['Daily_Return'] / 100).cumprod() - 1
-
-                    st.markdown("##### Strategy Performance")
-                    
-                    col_bt_metrics, col_bt_chart = st.columns(2)
-                    with col_bt_metrics:
-                        if not df_backtest['Strategy_Return'].dropna().empty:
-                            strategy_metrics = calculate_performance_metrics(df_backtest['Strategy_Return'].dropna())
-                            buy_hold_metrics = calculate_performance_metrics(df_backtest['Daily_Return'].dropna())
-
-                            st.write("**Strategy Metrics**")
-                            st.metric("Strategy Total Return", f"{strategy_metrics.get('Total Return (%)', 0):.2f}%")
-                            st.metric("Strategy Annualized Volatility", f"{strategy_metrics.get('Annualized Volatility (%)', 0):.2f}%")
-                            st.metric("Strategy Sharpe Ratio", f"{strategy_metrics.get('Sharpe Ratio', 0):.2f}")
-                            st.metric("Strategy Max Drawdown", f"{strategy_metrics.get('Max Drawdown (%)', 0):.2f}%")
-                            st.write("---")
-                            st.write("**Buy & Hold Metrics**")
-                            st.metric("Buy & Hold Total Return", f"{buy_hold_metrics.get('Total Return (%)', 0):.2f}%")
-                            st.metric("Buy & Hold Annualized Volatility", f"{buy_hold_metrics.get('Annualized Volatility (%)', 0):.2f}%")
-
-                        else:
-                            st.warning("Not enough data to calculate strategy returns.")
-
-                    with col_bt_chart:
-                        fig_backtest = go.Figure()
-                        fig_backtest.add_trace(go.Scatter(x=df_backtest.index, y=df_backtest['Cumulative_Strategy_Return'] * 100, mode='lines', name='Strategy Return (%)', line=dict(color='green', width=2)))
-                        fig_backtest.add_trace(go.Scatter(x=df_backtest.index, y=df_backtest['Cumulative_Buy_Hold_Return'] * 100, mode='lines', name='Buy & Hold Return (%)', line=dict(color='blue', dash='dash', width=1)))
+                    if len(df_backtest) < max(short_ma, long_ma):
+                        st.error("Not enough historical data for the selected MA windows. Please fetch more data or reduce window sizes.")
+                    else:
+                        df_backtest['SMA_Short_BT'] = ta.trend.sma_indicator(df_backtest['close'], window=short_ma)
+                        df_backtest['SMA_Long_BT'] = ta.trend.sma_indicator(df_backtest['close'], window=long_ma)
+                        df_backtest['Signal'] = 0.0
                         
-                        fig_backtest.update_layout(title_text=f"SMA Crossover Strategy vs. Buy & Hold for {last_symbol}",
-                                                   xaxis_title="Date", yaxis_title="Cumulative Return (%)",
-                                                   template="plotly_white", hovermode="x unified", height=450)
-                        st.plotly_chart(fig_backtest, use_container_width=True)
+                        # Ensure alignment and sufficient data for comparison
+                        # Use .loc to avoid SettingWithCopyWarning
+                        df_backtest.loc[df_backtest.index[max(short_ma, long_ma)-1:], 'Signal'] = np.where(
+                            df_backtest['SMA_Short_BT'][max(short_ma, long_ma)-1:] > df_backtest['SMA_Long_BT'][max(short_ma, long_ma)-1:], 1.0, 0.0
+                        )
+                        df_backtest['Position'] = df_backtest['Signal'].diff()
 
-                        # Visualize trades
-                        fig_trades = make_subplots(rows=1, cols=1, shared_xaxes=True, 
-                                                   vertical_spacing=0.03, 
-                                                   specs=[[{"secondary_y": False}]])
-                        
-                        fig_trades.add_trace(go.Candlestick(x=df_backtest.index,
-                                                                    open=df_backtest['open'], high=df_backtest['high'],
-                                                                    low=df_backtest['low'], close=df_backtest['close'],
-                                                                    name='Candlestick'), row=1, col=1)
-                        
-                        fig_trades.add_trace(go.Scatter(x=df_backtest.index, y=df_backtest['SMA_Short_BT'], mode='lines', name=f'SMA {short_ma}', line=dict(color='orange', width=1)), row=1, col=1)
-                        fig_trades.add_trace(go.Scatter(x=df_backtest.index, y=df_backtest['SMA_Long_BT'], mode='lines', name=f'SMA {long_ma}', line=dict(color='purple', width=1)), row=1, col=1)
+                        # Calculate strategy returns
+                        df_backtest['Strategy_Return'] = df_backtest['Daily_Return'] * df_backtest['Signal'].shift(1)
+                        df_backtest['Cumulative_Strategy_Return'] = (1 + df_backtest['Strategy_Return'] / 100).cumprod() - 1
+                        df_backtest['Cumulative_Buy_Hold_Return'] = (1 + df_backtest['Daily_Return'] / 100).cumprod() - 1
 
-                        # Plot buy signals
-                        fig_trades.add_trace(go.Scatter(
-                            x=df_backtest.index[df_backtest['Position'] == 1],
-                            y=df_backtest['close'][df_backtest['Position'] == 1],
-                            mode='markers',
-                            marker=dict(symbol='triangle-up', size=10, color='green', line=dict(width=1, color='DarkSlateGrey')),
-                            name='Buy Signal'
-                        ), row=1, col=1)
-                        # Plot sell signals
-                        fig_trades.add_trace(go.Scatter(
-                            x=df_backtest.index[df_backtest['Position'] == -1],
-                            y=df_backtest['close'][df_backtest['Position'] == -1],
-                            mode='markers',
-                            marker=dict(symbol='triangle-down', size=10, color='red', line=dict(width=1, color='DarkSlateGrey')),
-                            name='Sell Signal'
-                        ), row=1, col=1)
-                        fig_trades.update_layout(title=f'SMA Crossover Trading Signals for {last_symbol}',
-                                                  xaxis_rangeslider_visible=False,
-                                                  template="plotly_white", height=500)
-                        st.plotly_chart(fig_trades, use_container_width=True)
+                        st.markdown("##### Strategy Performance")
+                        
+                        col_bt_metrics, col_bt_chart = st.columns(2)
+                        with col_bt_metrics:
+                            if not df_backtest['Strategy_Return'].dropna().empty:
+                                strategy_metrics = calculate_performance_metrics(df_backtest['Strategy_Return'].dropna())
+                                buy_hold_metrics = calculate_performance_metrics(df_backtest['Daily_Return'].dropna())
+
+                                st.write("**Strategy Metrics**")
+                                st.metric("Strategy Total Return", f"{strategy_metrics.get('Total Return (%)', 0):.2f}%")
+                                st.metric("Strategy Annualized Volatility", f"{strategy_metrics.get('Annualized Volatility (%)', 0):.2f}%")
+                                st.metric("Strategy Sharpe Ratio", f"{strategy_metrics.get('Sharpe Ratio', 0):.2f}")
+                                st.metric("Strategy Max Drawdown", f"{strategy_metrics.get('Max Drawdown (%)', 0):.2f}%")
+                                st.write("---")
+                                st.write("**Buy & Hold Metrics**")
+                                st.metric("Buy & Hold Total Return", f"{buy_hold_metrics.get('Total Return (%)', 0):.2f}%")
+                                st.metric("Buy & Hold Annualized Volatility", f"{buy_hold_metrics.get('Annualized Volatility (%)', 0):.2f}%")
+
+                            else:
+                                st.warning("Not enough data to calculate strategy returns.")
+
+                        with col_bt_chart:
+                            fig_backtest = go.Figure()
+                            fig_backtest.add_trace(go.Scatter(x=df_backtest.index, y=df_backtest['Cumulative_Strategy_Return'] * 100, mode='lines', name='Strategy Return (%)', line=dict(color='green', width=2)))
+                            fig_backtest.add_trace(go.Scatter(x=df_backtest.index, y=df_backtest['Cumulative_Buy_Hold_Return'] * 100, mode='lines', name='Buy & Hold Return (%)', line=dict(color='blue', dash='dash', width=1)))
+                            
+                            fig_backtest.update_layout(title_text=f"SMA Crossover Strategy vs. Buy & Hold for {last_symbol}",
+                                                       xaxis_title="Date", yaxis_title="Cumulative Return (%)",
+                                                       template="plotly_white", hovermode="x unified", height=450)
+                            st.plotly_chart(fig_backtest, use_container_width=True)
+
+                            # Visualize trades
+                            fig_trades = make_subplots(rows=1, cols=1, shared_xaxes=True, 
+                                                       vertical_spacing=0.03, 
+                                                       specs=[[{"secondary_y": False}]])
+                            
+                            fig_trades.add_trace(go.Candlestick(x=df_backtest.index,
+                                                                        open=df_backtest['open'], high=df_backtest['high'],
+                                                                        low=df_backtest['low'], close=df_backtest['close'],
+                                                                        name='Candlestick'), row=1, col=1)
+                            
+                            fig_trades.add_trace(go.Scatter(x=df_backtest.index, y=df_backtest['SMA_Short_BT'], mode='lines', name=f'SMA {short_ma}', line=dict(color='orange', width=1)), row=1, col=1)
+                            fig_trades.add_trace(go.Scatter(x=df_backtest.index, y=df_backtest['SMA_Long_BT'], mode='lines', name=f'SMA {long_ma}', line=dict(color='purple', width=1)), row=1, col=1)
+
+                            # Plot buy signals
+                            fig_trades.add_trace(go.Scatter(
+                                x=df_backtest.index[df_backtest['Position'] == 1],
+                                y=df_backtest['close'][df_backtest['Position'] == 1],
+                                mode='markers',
+                                marker=dict(symbol='triangle-up', size=10, color='green', line=dict(width=1, color='DarkSlateGrey')),
+                                name='Buy Signal'
+                            ), row=1, col=1)
+                            # Plot sell signals
+                            fig_trades.add_trace(go.Scatter(
+                                x=df_backtest.index[df_backtest['Position'] == -1],
+                                y=df_backtest['close'][df_backtest['Position'] == -1],
+                                mode='markers',
+                                marker=dict(symbol='triangle-down', size=10, color='red', line=dict(width=1, color='DarkSlateGrey')),
+                                name='Sell Signal'
+                            ), row=1, col=1)
+                            fig_trades.update_layout(title=f'SMA Crossover Trading Signals for {last_symbol}',
+                                                      xaxis_rangeslider_visible=False,
+                                                      template="plotly_white", height=500)
+                            st.plotly_chart(fig_trades, use_container_width=True)
 
             else:
                 st.info("Apply technical indicators first to enable backtesting.")
