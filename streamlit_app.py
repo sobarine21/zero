@@ -16,7 +16,7 @@ from sklearn.metrics import mean_squared_error, r2_score
 import lightgbm as lgb
 import ta # Technical Analysis library
 import yfinance as yf # For fetching benchmark data for comparison
-import matplotlib.pyplot as plt # FIX: Added matplotlib import for pandas styler
+import matplotlib.pyplot as plt # Added matplotlib import for pandas styler
 
 st.set_page_config(page_title="Kite Connect - Advanced Analysis", layout="wide", initial_sidebar_state="expanded")
 st.title("Kite Connect (Zerodha) — Advanced Financial Analysis")
@@ -37,7 +37,7 @@ except Exception:
 
 if not API_KEY or not API_SECRET or not REDIRECT_URI:
     st.error("Missing Kite credentials in Streamlit secrets. Add [kite] api_key, api_secret and redirect_uri in `.streamlit/secrets.toml`.")
-    st.info("Example `secrets.toml`:\n```toml\n[kite]\napi_key=\"YOUR_API_KEY\"\napi_secret=\"YOUR_KITE_SECRET\"\nredirect_uri=\"http://localhost:8501\"\n```")
+    st.info("Example `secrets.toml`:\n```toml\n[kite]\napi_key=\"YOUR_KITE_API_KEY\"\napi_secret=\"YOUR_KITE_SECRET\"\nredirect_uri=\"http://localhost:8501\"\n```")
     st.stop()
 
 # ---------------------------
@@ -250,7 +250,7 @@ with st.sidebar:
         except Exception:
             st.warning("Authenticated, but profile fetch failed (check API permissions).")
 
-        if st.button("Logout (clear token)", help="This will clear your access token from the session and require re-login."):
+        if st.button("Logout (clear token)", key="sidebar_logout_btn", help="This will clear your access token from the session and require re-login."):
             st.session_state.pop("kite_access_token", None)
             st.session_state.pop("kite_login_response", None)
             for key in list(st.session_state.keys()): # Clear all session state for a clean re-run
@@ -263,7 +263,7 @@ with st.sidebar:
     st.markdown("---")
     st.header("Quick Data Access")
     if k:
-        if st.button("Fetch Current Holdings"):
+        if st.button("Fetch Current Holdings", key="sidebar_fetch_holdings_btn"):
             try:
                 holdings = k.holdings()
                 st.session_state["holdings_data"] = pd.DataFrame(holdings)
@@ -324,15 +324,15 @@ with tab_dashboard:
 
             # Optionally, show historical chart for NIFTY
             # Check if historical_data_NIFTY is an empty DataFrame rather than just None
-            if st.session_state.get("historical_data_NIFTY", pd.DataFrame()).empty: # FIX: Robust check for empty DataFrame
-                if st.button("Load NIFTY 50 Historical for Chart"):
+            if st.session_state.get("historical_data_NIFTY", pd.DataFrame()).empty:
+                # Use a unique key for this button
+                if st.button("Load NIFTY 50 Historical for Chart", key="dashboard_load_nifty_hist_btn"): 
                     with st.spinner("Fetching NIFTY 50 historical data..."):
                         nifty_hist = get_historical(k, "NIFTY 50", datetime.now().date() - timedelta(days=180), datetime.now().date(), "day", "NSE")
                         
-                        # FIX: Check for error in the dictionary-like structure
                         if isinstance(nifty_hist, dict) and "error" in nifty_hist:
                              st.error(f"Error fetching NIFTY 50 historical: {nifty_hist['error']}")
-                        elif isinstance(nifty_hist, list) and nifty_hist: # If successful, it's a list of dicts
+                        elif isinstance(nifty_hist, list) and nifty_hist:
                             nifty_df = pd.DataFrame(nifty_hist)
                             nifty_df["date"] = pd.to_datetime(nifty_df["date"])
                             nifty_df.set_index("date", inplace=True)
@@ -341,7 +341,7 @@ with tab_dashboard:
                             st.success("NIFTY 50 historical data loaded.")
                         else:
                             st.warning("No historical data returned for NIFTY 50.")
-                            st.session_state["historical_data_NIFTY"] = pd.DataFrame() # Ensure it's set to empty DF
+                            st.session_state["historical_data_NIFTY"] = pd.DataFrame()
             
             if st.session_state.get("historical_data_NIFTY") is not None and not st.session_state["historical_data_NIFTY"].empty:
                 nifty_df = st.session_state["historical_data_NIFTY"]
@@ -359,7 +359,6 @@ with tab_dashboard:
 
         with col3:
             st.subheader("Quick Performance")
-            # FIX: Ensure last_fetched_symbol exists before trying to access
             if "last_fetched_symbol" in st.session_state and st.session_state.get("historical_data") is not None and not st.session_state["historical_data"].empty:
                 last_symbol = st.session_state["last_fetched_symbol"]
                 returns = st.session_state["historical_data"]["close"].pct_change().dropna() * 100
@@ -387,7 +386,7 @@ with tab_portfolio:
     else:
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("Fetch Holdings"):
+            if st.button("Fetch Holdings", key="portfolio_fetch_holdings_btn"):
                 try:
                     holdings = k.holdings()
                     st.session_state["holdings_data"] = pd.DataFrame(holdings)
@@ -401,7 +400,7 @@ with tab_portfolio:
                 st.info("No holdings data available. Click 'Fetch Holdings'.")
 
         with col2:
-            if st.button("Fetch Positions"):
+            if st.button("Fetch Positions", key="portfolio_fetch_positions_btn"):
                 try:
                     positions = k.positions()
                     st.session_state["net_positions"] = pd.DataFrame(positions.get("net", []))
@@ -423,7 +422,7 @@ with tab_portfolio:
                 st.info("No day positions data available.")
 
         with col3:
-            if st.button("Fetch Margins"):
+            if st.button("Fetch Margins", key="portfolio_fetch_margins_btn"):
                 try:
                     margins = k.margins()
                     st.session_state["margins_data"] = margins
@@ -458,20 +457,20 @@ with tab_orders:
         with st.form("place_order_form", clear_on_submit=False):
             col_order1, col_order2 = st.columns(2)
             with col_order1:
-                variety = st.selectbox("Variety", ["regular", "amo", "co", "iceberg"], index=0, help="Order variety: Regular, After Market Order (AMO), Cover Order (CO), Iceberg.")
-                exchange = st.selectbox("Exchange", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0)
-                tradingsymbol = st.text_input("Tradingsymbol (e.g., INFY / NIFTY24FEBCALL19000)", value="INFY", help="Enter the exact trading symbol.")
-                transaction_type = st.radio("Transaction Type", ["BUY", "SELL"], index=0, horizontal=True)
-                quantity = st.number_input("Quantity", min_value=1, value=1, step=1)
+                variety = st.selectbox("Variety", ["regular", "amo", "co", "iceberg"], index=0, help="Order variety: Regular, After Market Order (AMO), Cover Order (CO), Iceberg.", key="order_variety")
+                exchange = st.selectbox("Exchange", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0, key="order_exchange")
+                tradingsymbol = st.text_input("Tradingsymbol (e.g., INFY / NIFTY24FEBCALL19000)", value="INFY", help="Enter the exact trading symbol.", key="order_tradingsymbol")
+                transaction_type = st.radio("Transaction Type", ["BUY", "SELL"], index=0, horizontal=True, key="order_transaction_type")
+                quantity = st.number_input("Quantity", min_value=1, value=1, step=1, key="order_quantity")
             with col_order2:
-                order_type = st.selectbox("Order Type", ["MARKET", "LIMIT", "SL", "SL-M"], index=0, help="MARKET: Best available price. LIMIT: Specify a price. SL: Stop Loss. SL-M: Stop Loss Market.")
-                product = st.selectbox("Product Type", ["CNC", "MIS", "NRML", "CO", "MTF"], index=0, help="CNC: Cash & Carry (Delivery). MIS: Margin Intraday Square-off. NRML: Normal (Futures & Options). CO: Cover Order. MTF: Margin Trade Funding.")
-                price = st.text_input("Price (for LIMIT/SL orders)", value="", help="Required for LIMIT and SL orders. Leave blank for MARKET orders.")
-                trigger_price = st.text_input("Trigger Price (for SL/SL-M orders)", value="", help="Required for SL and SL-M orders. This price triggers the order.")
-                validity = st.selectbox("Validity", ["DAY", "IOC", "TTL"], index=0, help="DAY: Valid for the day. IOC: Immediate or Cancel. TTL: Time in Minutes (for bracket orders, etc.).")
-                tag = st.text_input("Tag (optional, max 20 chars)", value="", help="A custom tag for identifying your order.")
+                order_type = st.selectbox("Order Type", ["MARKET", "LIMIT", "SL", "SL-M"], index=0, help="MARKET: Best available price. LIMIT: Specify a price. SL: Stop Loss. SL-M: Stop Loss Market.", key="order_type")
+                product = st.selectbox("Product Type", ["CNC", "MIS", "NRML", "CO", "MTF"], index=0, help="CNC: Cash & Carry (Delivery). MIS: Margin Intraday Square-off. NRML: Normal (Futures & Options). CO: Cover Order. MTF: Margin Trade Funding.", key="order_product")
+                price = st.text_input("Price (for LIMIT/SL orders)", value="", help="Required for LIMIT and SL orders. Leave blank for MARKET orders.", key="order_price")
+                trigger_price = st.text_input("Trigger Price (for SL/SL-M orders)", value="", help="Required for SL and SL-M orders. This price triggers the order.", key="order_trigger_price")
+                validity = st.selectbox("Validity", ["DAY", "IOC", "TTL"], index=0, help="DAY: Valid for the day. IOC: Immediate or Cancel. TTL: Time in Minutes (for bracket orders, etc.).", key="order_validity")
+                tag = st.text_input("Tag (optional, max 20 chars)", value="", help="A custom tag for identifying your order.", key="order_tag")
             
-            submit_place = st.form_submit_button("Place Order")
+            submit_place = st.form_submit_button("Place Order", key="submit_place_order")
 
             if submit_place:
                 try:
@@ -505,7 +504,7 @@ with tab_orders:
 
         with col_view_orders:
             st.markdown("#### View All Orders and Trades")
-            if st.button("Fetch All Orders (Today)"):
+            if st.button("Fetch All Orders (Today)", key="fetch_all_orders_btn"):
                 try:
                     orders = k.orders()
                     st.session_state["all_orders"] = pd.DataFrame(orders)
@@ -516,7 +515,7 @@ with tab_orders:
                 with st.expander("Show Orders"):
                     st.dataframe(st.session_state["all_orders"], use_container_width=True)
 
-            if st.button("Fetch All Trades (Today)"):
+            if st.button("Fetch All Trades (Today)", key="fetch_all_trades_btn"):
                 try:
                     trades = k.trades()
                     st.session_state["all_trades"] = pd.DataFrame(trades)
@@ -529,11 +528,11 @@ with tab_orders:
 
         with col_manage_single:
             st.markdown("#### Get History, Modify, or Cancel Single Order")
-            order_id_action = st.text_input("Enter Order ID for action", value="", help="The Order ID of the order you wish to manage.")
+            order_id_action = st.text_input("Enter Order ID for action", value="", help="The Order ID of the order you wish to manage.", key="order_id_action")
             
             st.markdown("---")
             st.markdown("##### Order History")
-            if st.button("Get Order History", key="get_order_history"):
+            if st.button("Get Order History", key="get_order_history_btn"):
                 if order_id_action:
                     try:
                         history = k.order_history(order_id_action)
@@ -546,12 +545,12 @@ with tab_orders:
 
             st.markdown("##### Modify Order")
             with st.form("modify_order_form"):
-                mod_variety = st.selectbox("Variety (for Modify)", ["regular", "amo", "co", "iceberg"], index=0, key="mod_variety")
+                mod_variety = st.selectbox("Variety (for Modify)", ["regular", "amo", "co", "iceberg"], index=0, key="mod_variety_selector")
                 mod_new_price = st.text_input("New Price (optional)", value="", key="mod_new_price")
                 mod_new_qty = st.number_input("New Quantity (optional)", min_value=0, value=0, step=1, key="mod_new_qty")
                 mod_new_trigger_price = st.text_input("New Trigger Price (optional)", value="", key="mod_new_trigger_price")
                 
-                submit_modify = st.form_submit_button("Modify Order")
+                submit_modify = st.form_submit_button("Modify Order", key="submit_modify_order")
                 if submit_modify:
                     if order_id_action:
                         try:
@@ -576,7 +575,7 @@ with tab_orders:
                         st.warning("Please provide an Order ID to modify.")
 
             st.markdown("##### Cancel Order")
-            if st.button("Cancel Order", key="cancel_order"):
+            if st.button("Cancel Order", key="cancel_order_btn"):
                 if order_id_action:
                     try:
                         with st.spinner(f"Cancelling order {order_id_action}..."):
@@ -607,7 +606,7 @@ with tab_market:
             market_data_type = st.radio("Choose data type:", 
                                          ("LTP (Last Traded Price)", "OHLC + LTP", "Full Market Quote (OHLC, Depth, OI)"), 
                                          index=0, key="market_data_type_radio_tab")
-            if st.button("Get Market Data"):
+            if st.button("Get Market Data", key="get_market_data_btn"):
                 market_data_response = {}
                 if market_data_type == "LTP (Last Traded Price)":
                     market_data_response = get_ltp_price(k, q_symbol, q_exchange)
@@ -637,64 +636,53 @@ with tab_market:
         st.markdown("Retrieve and visualize historical OHLCV data for comprehensive analysis.")
 
         with st.expander("Load Instruments for Symbol Lookup (Required)"):
-            exchange_for_lookup = st.selectbox("Exchange to load instruments for lookup", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0, key="hist_inst_load_exchange")
-            # FIX: Robust check for empty DataFrame for instruments_df
-            if st.button("Load Instruments into Cache") or st.session_state.get("instruments_df", pd.DataFrame()).empty:
-                if st.button("Load Instruments into Cache"): # Only load explicitly if button clicked
-                    inst_df = load_instruments(k, exchange_for_lookup)
-                    st.session_state["instruments_df"] = inst_df
-                    if not inst_df.empty:
-                        st.success(f"Loaded {len(inst_df)} instruments for {exchange_for_lookup}.")
-                    else:
-                        st.warning(f"Could not load instruments for {exchange_for_lookup}. Check API key and permissions.")
-                elif st.session_state.get("instruments_df", pd.DataFrame()).empty and k: # Autoload on initial load if empty and authenticated
-                     with st.spinner(f"Auto-loading instruments for {exchange_for_lookup}..."):
-                        inst_df = load_instruments(k, exchange_for_lookup)
-                        st.session_state["instruments_df"] = inst_df
-                        if not inst_df.empty:
-                            st.success(f"Auto-loaded {len(inst_df)} instruments for {exchange_for_lookup}.")
-                        else:
-                            st.warning(f"Could not auto-load instruments for {exchange_for_lookup}. Manual load might be needed.")
+            exchange_for_lookup = st.selectbox("Exchange to load instruments for lookup", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0, key="hist_inst_load_exchange_selector")
+            # Only load explicitly if button clicked, no auto-load on general page rerun
+            if st.button("Load Instruments into Cache", key="load_inst_cache_btn"): 
+                inst_df = load_instruments(k, exchange_for_lookup)
+                st.session_state["instruments_df"] = inst_df
+                if not inst_df.empty:
+                    st.success(f"Loaded {len(inst_df)} instruments for {exchange_for_lookup}.")
+                else:
+                    st.warning(f"Could not load instruments for {exchange_for_lookup}. Check API key and permissions.")
 
 
         col_hist_controls, col_hist_plot = st.columns([1, 2])
 
         with col_hist_controls:
-            hist_exchange = st.selectbox("Exchange", ["NSE", "BSE", "NFO"], index=0, key="hist_ex_tab")
-            hist_symbol = st.text_input("Tradingsymbol (e.g., INFY)", value="INFY", key="hist_sym_tab")
+            hist_exchange = st.selectbox("Exchange", ["NSE", "BSE", "NFO"], index=0, key="hist_ex_tab_selector")
+            hist_symbol = st.text_input("Tradingsymbol (e.g., INFY)", value="INFY", key="hist_sym_tab_input")
             
             default_to_date = datetime.now().date()
             default_from_date = default_to_date - timedelta(days=90) # Default to 3 months
 
-            from_date = st.date_input("From Date", value=default_from_date, key="from_dt_tab")
-            to_date = st.date_input("To Date", value=default_to_date, key="to_dt_tab")
-            interval = st.selectbox("Interval", ["minute", "5minute", "15minute", "30minute", "day", "week", "month"], index=4)
+            from_date = st.date_input("From Date", value=default_from_date, key="from_dt_tab_input")
+            to_date = st.date_input("To Date", value=default_to_date, key="to_dt_tab_input")
+            interval = st.selectbox("Interval", ["minute", "5minute", "15minute", "30minute", "day", "week", "month"], index=4, key="hist_interval_selector")
 
-            if st.button("Fetch Historical Data"):
-                # FIX: Robust check for empty DataFrame
+            if st.button("Fetch Historical Data", key="fetch_historical_data_btn"):
                 if st.session_state.get("instruments_df", pd.DataFrame()).empty:
                     st.error("Please load instruments first from the expander above to enable symbol lookup.")
                 else:
                     with st.spinner(f"Fetching {interval} historical data for {hist_symbol}..."):
                         hist_data = get_historical(k, hist_symbol, from_date, to_date, interval, hist_exchange)
                         
-                        # FIX: Check for error in the dictionary-like structure
                         if isinstance(hist_data, dict) and "error" in hist_data:
                             st.error(f"Historical fetch failed: {hist_data['error']}")
                             if "Insufficient permission" in hist_data['error']:
                                 st.warning("Your Zerodha API key might require an active subscription for historical data.")
-                            st.session_state["historical_data"] = pd.DataFrame() # Clear previous data
+                            st.session_state["historical_data"] = pd.DataFrame()
                             st.session_state["last_fetched_symbol"] = None
-                        elif isinstance(hist_data, list) and hist_data: # If successful, it's a list of dicts
+                        elif isinstance(hist_data, list) and hist_data:
                             df = pd.DataFrame(hist_data)
                             df["date"] = pd.to_datetime(df["date"])
                             df.set_index("date", inplace=True)
                             df.sort_index(inplace=True)
-                            st.session_state["historical_data"] = df # Store for ML analysis
+                            st.session_state["historical_data"] = df
                             st.session_state["last_fetched_symbol"] = hist_symbol
                             st.success(f"Successfully fetched {len(df)} records for {hist_symbol} ({interval}).")
-                            st.dataframe(df.head()) # Show a preview
-                        else: # No data returned, but no explicit error dict
+                            st.dataframe(df.head())
+                        else:
                             st.info(f"No historical data returned for {hist_symbol} for the selected period.")
                             st.session_state["historical_data"] = pd.DataFrame()
                             st.session_state["last_fetched_symbol"] = None
@@ -720,7 +708,7 @@ with tab_market:
                                   xaxis_rangeslider_visible=False,
                                   height=600,
                                   template="plotly_white",
-                                  hovermode="x unified") # Improved hover
+                                  hovermode="x unified")
                 fig.update_yaxes(title_text="Price", row=1, col=1)
                 fig.update_yaxes(title_text="Volume", row=2, col=1)
                 st.plotly_chart(fig, use_container_width=True)
@@ -749,16 +737,16 @@ with tab_ml:
             col_indicator_params, col_indicator_data = st.columns([1,2])
             with col_indicator_params:
                 st.markdown("##### Indicator Parameters")
-                sma_short_window = st.slider("SMA Short Window", min_value=5, max_value=50, value=10, step=1)
-                sma_long_window = st.slider("SMA Long Window", min_value=20, max_value=200, value=50, step=5)
-                rsi_window = st.slider("RSI Window", min_value=7, max_value=30, value=14, step=1)
-                macd_fast = st.slider("MACD Fast Period", min_value=5, max_value=20, value=12, step=1)
-                macd_slow = st.slider("MACD Slow Period", min_value=20, max_value=40, value=26, step=1)
-                macd_signal = st.slider("MACD Signal Period", min_value=5, max_value=15, value=9, step=1)
-                bb_window = st.slider("Bollinger Bands Window", min_value=10, max_value=50, value=20, step=1)
-                bb_std_dev = st.slider("Bollinger Bands Std Dev", min_value=1.0, max_value=3.0, value=2.0, step=0.1)
+                sma_short_window = st.slider("SMA Short Window", min_value=5, max_value=50, value=10, step=1, key="ml_sma_short_window")
+                sma_long_window = st.slider("SMA Long Window", min_value=20, max_value=200, value=50, step=5, key="ml_sma_long_window")
+                rsi_window = st.slider("RSI Window", min_value=7, max_value=30, value=14, step=1, key="ml_rsi_window")
+                macd_fast = st.slider("MACD Fast Period", min_value=5, max_value=20, value=12, step=1, key="ml_macd_fast")
+                macd_slow = st.slider("MACD Slow Period", min_value=20, max_value=40, value=26, step=1, key="ml_macd_slow")
+                macd_signal = st.slider("MACD Signal Period", min_value=5, max_value=15, value=9, step=1, key="ml_macd_signal")
+                bb_window = st.slider("Bollinger Bands Window", min_value=10, max_value=50, value=20, step=1, key="ml_bb_window")
+                bb_std_dev = st.slider("Bollinger Bands Std Dev", min_value=1.0, max_value=3.0, value=2.0, step=0.1, key="ml_bb_std_dev")
                 
-                if st.button("Apply Indicators"):
+                if st.button("Apply Indicators", key="apply_indicators_btn"):
                     df_with_indicators = add_indicators(historical_data.copy(), 
                                                         sma_short_window, sma_long_window, 
                                                         rsi_window, macd_fast, macd_slow, macd_signal, 
@@ -822,19 +810,20 @@ with tab_ml:
 
                 col_ml_controls, col_ml_output = st.columns(2)
                 with col_ml_controls:
-                    model_type_selected = st.selectbox("Select ML Model", ["Linear Regression", "Random Forest Regressor", "LightGBM Regressor"], key="ml_model_type_selector") # Renamed key
+                    model_type_selected = st.selectbox("Select ML Model", ["Linear Regression", "Random Forest Regressor", "LightGBM Regressor"], key="ml_model_type_selector")
                     target_column = st.selectbox("Select Target Variable", ["close"], help="Currently, only 'close' price is supported as target.", key="ml_target_col")
                     
                     ml_data_processed = ml_data.copy()
                     ml_data_processed['target'] = ml_data_processed[target_column].shift(-1)
                     ml_data_processed.dropna(subset=['target'], inplace=True)
                     
-                    features = [col for col in ml_data_processed.columns if col not in ['open', 'high', 'low', 'close', 'volume', 'target', 'MACD_hist']] # Exclude MACD_hist if not a direct feature
+                    features = [col for col in ml_data_processed.columns if col not in ['open', 'high', 'low', 'close', 'volume', 'target', 'MACD_hist']]
                     
                     selected_features = st.multiselect("Select Features for Model (recommended: use all indicators)", 
                                                         options=features, 
                                                         default=features,
-                                                        help="Choose which technical indicators and lagged prices to use as input features for the model.")
+                                                        help="Choose which technical indicators and lagged prices to use as input features for the model.",
+                                                        key="ml_selected_features_multiselect")
                     
                     if not selected_features:
                         st.warning("Please select at least one feature.")
@@ -850,7 +839,7 @@ with tab_ml:
                             
                             st.info(f"Training data: {len(X_train)} samples, Testing data: {len(X_test)} samples")
 
-                            if st.button(f"Train {model_type_selected} Model"):
+                            if st.button(f"Train {model_type_selected} Model", key="train_ml_model_btn"):
                                 if len(X_train) == 0 or len(X_test) == 0:
                                     st.error("Insufficient data for training or testing after split. Adjust test size or fetch more data.")
                                 else:
@@ -877,7 +866,6 @@ with tab_ml:
                                         st.success(f"{model_type_selected} Model Trained Successfully!")
                                         
                 with col_ml_output:
-                    # FIX: Safely check if these keys exist before accessing
                     if st.session_state.get("ml_model") is not None and st.session_state.get("y_test") is not None and st.session_state.get("y_pred") is not None:
                         st.markdown("##### Model Performance Metrics")
                         st.write(f"**Model Type:** {st.session_state.get('ml_model_type', 'N/A')}")
@@ -898,8 +886,8 @@ with tab_ml:
                         if st.session_state.get("ml_model_type") in ["Random Forest Regressor", "LightGBM Regressor"]:
                             st.markdown("##### Feature Importance")
                             model = st.session_state["ml_model"]
-                            features = st.session_state.get("ml_features") # FIX: Safely get features
-                            if hasattr(model, 'feature_importances_') and features and len(features) == len(model.feature_importances_): # Check if attribute exists and features list is not empty and lengths match
+                            features = st.session_state.get("ml_features") 
+                            if hasattr(model, 'feature_importances_') and features and len(features) == len(model.feature_importances_):
                                 importance = model.feature_importances_
                                 feature_importance_df = pd.DataFrame({'Feature': features, 'Importance': importance}).sort_values(by='Importance', ascending=False)
                                 
@@ -923,15 +911,14 @@ with tab_ml:
             if st.session_state.get("ml_model") and st.session_state.get("X_test_ml") is not None:
                 model = st.session_state["ml_model"]
                 X_test_ml = st.session_state["X_test_ml"]
-                ml_features = st.session_state.get("ml_features") # FIX: Safely get features
+                ml_features = st.session_state.get("ml_features")
 
                 st.write(f"**Model trained:** {st.session_state.get('ml_model_type', 'N/A')}")
-                st.write(f"**Features used:** {', '.join(ml_features) if ml_features else 'None'}") # FIX: Handle empty features
+                st.write(f"**Features used:** {', '.join(ml_features) if ml_features else 'None'}")
 
-                if not X_test_ml.empty and ml_features and model is not None: # Ensure features exist and model is trained
-                    # Ensure latest_features_df has the same columns in the same order as ml_features
+                if not X_test_ml.empty and ml_features and model is not None:
                     latest_features_df = X_test_ml.iloc[[-1]][ml_features]
-                    if st.button("Simulate Next Period Prediction"):
+                    if st.button("Simulate Next Period Prediction", key="simulate_prediction_btn"):
                         with st.spinner("Generating simulated prediction..."):
                             simulated_prediction = model.predict(latest_features_df)[0]
                         st.success(f"Simulated **next period** close price prediction: **₹{simulated_prediction:.2f}**")
@@ -950,7 +937,7 @@ with tab_ml:
                 short_ma = st.slider("Short MA Window", 5, 50, 10, key="bt_short_ma")
                 long_ma = st.slider("Long MA Window", 20, 200, 50, key="bt_long_ma")
 
-                if st.button("Run Backtest"):
+                if st.button("Run Backtest", key="run_backtest_btn"):
                     if len(df_backtest) < max(short_ma, long_ma):
                         st.error("Not enough historical data for the selected MA windows. Please fetch more data or reduce window sizes.")
                     else:
@@ -958,8 +945,6 @@ with tab_ml:
                         df_backtest['SMA_Long_BT'] = ta.trend.sma_indicator(df_backtest['close'], window=long_ma)
                         df_backtest['Signal'] = 0.0
                         
-                        # Ensure alignment and sufficient data for comparison
-                        # Use .loc to avoid SettingWithCopyWarning
                         df_backtest.loc[df_backtest.index[max(short_ma, long_ma)-1:], 'Signal'] = np.where(
                             df_backtest['SMA_Short_BT'][max(short_ma, long_ma)-1:] > df_backtest['SMA_Long_BT'][max(short_ma, long_ma)-1:], 1.0, 0.0
                         )
@@ -1082,7 +1067,7 @@ with tab_risk:
 
                 st.markdown("---")
                 st.markdown("##### Rolling Volatility")
-                rolling_window = st.slider("Rolling Volatility Window (days)", min_value=10, max_value=252, value=30)
+                rolling_window = st.slider("Rolling Volatility Window (days)", min_value=10, max_value=252, value=30, key="risk_rolling_vol_window")
                 if len(daily_returns) > rolling_window:
                     rolling_vol = daily_returns.rolling(window=rolling_window).std() * np.sqrt(trading_days_per_year)
                     fig_rolling_vol = go.Figure(go.Scatter(x=rolling_vol.index, y=rolling_vol, mode='lines', name='Rolling Volatility'))
@@ -1108,8 +1093,8 @@ with tab_risk:
             
             col_var_controls, col_var_plot = st.columns([1,2])
             with col_var_controls:
-                confidence_level = st.slider("Confidence Level (%)", min_value=90, max_value=99, value=95, step=1)
-                holding_period_var = st.number_input("Holding Period for VaR (days)", min_value=1, value=1, step=1)
+                confidence_level = st.slider("Confidence Level (%)", min_value=90, max_value=99, value=95, step=1, key="risk_confidence_level")
+                holding_period_var = st.number_input("Holding Period for VaR (days)", min_value=1, value=1, step=1, key="risk_holding_period_var")
                 
                 # Calculate VaR using the historical percentile method
                 var_percentile_1day = np.percentile(daily_returns, 100 - confidence_level)
@@ -1152,12 +1137,12 @@ with tab_risk:
                     "Custom % Change": {"type": "custom", "percent": 0.0}
                 }
 
-                scenario_key = st.selectbox("Select Stress Scenario", list(scenarios.keys()))
+                scenario_key = st.selectbox("Select Stress Scenario", list(scenarios.keys()), key="risk_scenario_selector")
                 custom_change_percent = 0.0
                 if scenario_key == "Custom % Change":
-                    custom_change_percent = st.number_input("Enter Custom Percentage Change (%)", value=0.0, step=0.1)
+                    custom_change_percent = st.number_input("Enter Custom Percentage Change (%)", value=0.0, step=0.1, key="risk_custom_change_input")
                 
-                if st.button("Run Stress Test"):
+                if st.button("Run Stress Test", key="run_stress_test_btn"):
                     current_price = historical_data['close'].iloc[-1]
                     scenario_data = scenarios[scenario_key]
                     stressed_price = 0
@@ -1221,7 +1206,7 @@ with tab_performance:
             
             col_metrics, col_chart = st.columns([1,2])
             with col_metrics:
-                risk_free_rate = st.number_input("Risk-Free Rate (Annualized %)", min_value=0.0, max_value=10.0, value=4.0, step=0.1, help="e.g., current interest rate on short-term government bonds.")
+                risk_free_rate = st.number_input("Risk-Free Rate (Annualized %)", min_value=0.0, max_value=10.0, value=4.0, step=0.1, key="perf_risk_free_rate")
                 performance_metrics = calculate_performance_metrics(returns_series, risk_free_rate)
 
                 st.metric("Total Return", f"{performance_metrics.get('Total Return (%)', 0):.2f}%")
@@ -1246,15 +1231,14 @@ with tab_performance:
                 # Benchmark comparison (using yfinance for NIFTY 50 as an example)
                 st.markdown("---")
                 st.subheader("Benchmark Comparison (e.g., NIFTY 50)")
-                benchmark_symbol = st.text_input("Benchmark Symbol (e.g., ^NSEI for NIFTY 50 from Yahoo Finance)", "^NSEI")
+                benchmark_symbol = st.text_input("Benchmark Symbol (e.g., ^NSEI for NIFTY 50 from Yahoo Finance)", "^NSEI", key="perf_benchmark_symbol")
                 
-                if st.button("Fetch & Compare Benchmark"):
+                if st.button("Fetch & Compare Benchmark", key="fetch_compare_benchmark_btn"):
                     with st.spinner(f"Fetching {benchmark_symbol} data..."):
                         try:
-                            # FIX: Access 'Close' column for benchmark data
                             benchmark_data = yf.download(benchmark_symbol, start=historical_data.index.min().strftime('%Y-%m-%d'), end=historical_data.index.max().strftime('%Y-%m-%d'))
                             if not benchmark_data.empty and 'Close' in benchmark_data.columns:
-                                benchmark_returns = benchmark_data['Close'].pct_change().dropna() * 100 # FIX: Used 'Close'
+                                benchmark_returns = benchmark_data['Close'].pct_change().dropna() * 100
                                 # Align dates
                                 common_dates = returns_series.index.intersection(benchmark_returns.index)
                                 returns_series_aligned = returns_series.loc[common_dates]
@@ -1268,20 +1252,15 @@ with tab_performance:
                                                                          name=f'{benchmark_symbol} Cumulative Returns',
                                                                          line=dict(color='green', dash='dash', width=2)))
                                     
-                                    # Calculate Alpha & Beta (simplified)
-                                    # Need to re-align for regression
                                     df_for_alpha_beta = pd.DataFrame({'Asset': returns_series_aligned, 'Benchmark': benchmark_returns_aligned}).dropna()
                                     if len(df_for_alpha_beta) > 1:
                                         covariance = df_for_alpha_beta['Asset'].cov(df_for_alpha_beta['Benchmark'])
                                         benchmark_variance = df_for_alpha_beta['Benchmark'].var()
                                         beta = covariance / benchmark_variance if benchmark_variance != 0 else np.nan
 
-                                        # Convert annualized returns to daily for Alpha calculation
                                         annual_asset_return = (1 + performance_metrics['Annualized Return (%)'] / 100)
                                         annual_benchmark_return = (1 + calculate_performance_metrics(benchmark_returns_aligned)['Annualized Return (%)'] / 100)
 
-                                        # Simplified Jensen's Alpha (annualized)
-                                        # Alpha = Asset_Return - [Risk_Free_Rate + Beta * (Benchmark_Return - Risk_Free_Rate)]
                                         alpha_annual = (annual_asset_return - (1 + risk_free_rate/100) - beta * (annual_benchmark_return - (1 + risk_free_rate/100))) * 100 if not np.isnan(beta) else np.nan
 
                                         st.markdown("##### Alpha and Beta")
@@ -1313,21 +1292,19 @@ with tab_multi_asset:
     else:
         st.subheader("Select Instruments for Analysis")
         
-        # User input for multiple symbols
-        selected_symbols_str = st.text_area("Enter Trading Symbols (comma-separated, e.g., INFY,RELIANCE,TCS,NIFTY 50)", "INFY,RELIANCE,TCS,NIFTY 50", height=80)
+        selected_symbols_str = st.text_area("Enter Trading Symbols (comma-separated, e.g., INFY,RELIANCE,TCS,NIFTY 50)", "INFY,RELIANCE,TCS,NIFTY 50", height=80, key="multi_asset_symbols_input")
         symbols_to_analyze = [s.strip().upper() for s in selected_symbols_str.split(',') if s.strip()]
         
-        multi_asset_exchange = st.selectbox("Exchange for all symbols", ["NSE", "BSE", "NFO"], index=0, key="multi_asset_exchange")
-        multi_asset_interval = st.selectbox("Interval for historical data", ["day", "week", "month"], index=0, key="multi_asset_interval")
+        multi_asset_exchange = st.selectbox("Exchange for all symbols", ["NSE", "BSE", "NFO"], index=0, key="multi_asset_exchange_selector")
+        multi_asset_interval = st.selectbox("Interval for historical data", ["day", "week", "month"], index=0, key="multi_asset_interval_selector")
         
         default_to_date_multi = datetime.now().date()
-        default_from_date_multi = default_to_date_multi - timedelta(days=365) # Default to 1 year
+        default_from_date_multi = default_to_date_multi - timedelta(days=365)
 
-        from_date_multi = st.date_input("From Date", value=default_from_date_multi, key="from_dt_multi")
-        to_date_multi = st.date_input("To Date", value=default_to_date_multi, key="to_dt_multi")
+        from_date_multi = st.date_input("From Date", value=default_from_date_multi, key="from_dt_multi_input")
+        to_date_multi = st.date_input("To Date", value=default_to_date_multi, key="to_dt_multi_input")
 
-        if st.button("Fetch Multi-Asset Data & Analyze"):
-            # FIX: Robust check for empty DataFrame
+        if st.button("Fetch Multi-Asset Data & Analyze", key="fetch_multi_asset_btn"):
             if st.session_state.get("instruments_df", pd.DataFrame()).empty:
                 st.warning("Please load instruments in 'Market & Historical' or 'Instruments Utils' tab first.")
                 st.stop()
@@ -1340,16 +1317,15 @@ with tab_multi_asset:
                 status_text.text(f"Fetching historical data for {symbol} ({i+1}/{len(symbols_to_analyze)})...")
                 hist_data = get_historical(k, symbol, from_date_multi, to_date_multi, multi_asset_interval, multi_asset_exchange)
                 
-                # FIX: Check for error in the dictionary-like structure
                 if isinstance(hist_data, dict) and "error" in hist_data:
                     st.error(f"Error fetching data for {symbol}: {hist_data['error']}")
-                elif isinstance(hist_data, list) and hist_data: # If successful, it's a list of dicts
+                elif isinstance(hist_data, list) and hist_data:
                     df = pd.DataFrame(hist_data)
                     if not df.empty:
                         df["date"] = pd.to_datetime(df["date"])
                         df.set_index("date", inplace=True)
                         df.sort_index(inplace=True)
-                        df['close'] = pd.to_numeric(df['close'], errors='coerce') # Ensure close is numeric
+                        df['close'] = pd.to_numeric(df['close'], errors='coerce')
                         df.dropna(subset=['close'], inplace=True)
                         all_historical_data[symbol] = df['close']
                     else:
@@ -1362,7 +1338,6 @@ with tab_multi_asset:
             if len(all_historical_data) < 2:
                 st.error("Please select at least two instruments with available historical data for correlation analysis.")
             else:
-                # Combine close prices into a single DataFrame
                 combined_df = pd.DataFrame(all_historical_data)
                 combined_df.dropna(inplace=True)
 
@@ -1422,7 +1397,6 @@ with tab_ws:
 
         with st.expander("Lookup Instrument Token for WebSocket Subscription"):
             # Autoload instruments if not already loaded, for convenience in getting tokens
-            # FIX: Robust check for empty DataFrame
             if st.session_state.get("instruments_df", pd.DataFrame()).empty:
                 st.info("Loading instruments for NSE to facilitate instrument token lookup for WebSocket.")
                 nse_instruments = load_instruments(k, "NSE") 
@@ -1432,11 +1406,11 @@ with tab_ws:
                 else:
                     st.warning("Could not load NSE instruments. WebSocket token lookup might be limited.")
             
-            ws_exchange = st.selectbox("Exchange for Symbol Lookup", ["NSE", "BSE", "NFO"], index=0, key="ws_lookup_ex")
-            ws_tradingsymbol = st.text_input("Tradingsymbol (e.g., INFY)", value="INFY", key="ws_lookup_sym")
+            ws_exchange = st.selectbox("Exchange for Symbol Lookup", ["NSE", "BSE", "NFO"], index=0, key="ws_lookup_ex_selector")
+            ws_tradingsymbol = st.text_input("Tradingsymbol (e.g., INFY)", value="INFY", key="ws_lookup_sym_input")
             
             instrument_token_for_ws = None
-            if st.button("Lookup Token"):
+            if st.button("Lookup Token", key="ws_lookup_token_btn"):
                 if "instruments_df" in st.session_state and not st.session_state["instruments_df"].empty:
                     instrument_token_for_ws = find_instrument_token(st.session_state["instruments_df"], ws_tradingsymbol, ws_exchange)
                     if instrument_token_for_ws:
@@ -1455,7 +1429,7 @@ with tab_ws:
 
         col_ws_controls, col_ws_status = st.columns(2)
         with col_ws_controls:
-            if st.button("Start Ticker (Subscribe)", help="Start the WebSocket connection and subscribe to selected tokens.") and not st.session_state["kt_running"]:
+            if st.button("Start Ticker (Subscribe)", key="start_ticker_btn", help="Start the WebSocket connection and subscribe to selected tokens.") and not st.session_state["kt_running"]:
                 try:
                     access_token = st.session_state["kite_access_token"]
                     user_id = st.session_state["kite_login_response"].get("user_id")
@@ -1539,7 +1513,7 @@ with tab_ws:
                     st.session_state["kt_status_message"] = f"Failed to start ticker: {e}"
 
         with col_ws_status:
-            if st.button("Stop Ticker", help="Disconnect the WebSocket connection.") and st.session_state.get("kt_running"):
+            if st.button("Stop Ticker", key="stop_ticker_btn", help="Disconnect the WebSocket connection.") and st.session_state.get("kt_running"):
                 try:
                     kt = st.session_state.get("kt_ticker")
                     if kt:
@@ -1608,9 +1582,8 @@ with tab_inst:
     st.header("Instrument Lookup and Utilities")
     st.markdown("Find instrument tokens, which are essential for fetching historical data or subscribing to live market data.")
     
-    inst_exchange = st.selectbox("Select Exchange to Load Instruments", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0)
-    # FIX: Robust check for empty DataFrame
-    if st.button("Load Instruments for Selected Exchange (cached)", help="Fetching instruments can take a moment, especially for large exchanges. Data is cached."):
+    inst_exchange = st.selectbox("Select Exchange to Load Instruments", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0, key="inst_utils_exchange_selector")
+    if st.button("Load Instruments for Selected Exchange (cached)", key="inst_utils_load_instruments_btn", help="Fetching instruments can take a moment, especially for large exchanges. Data is cached."):
         try:
             df = load_instruments(k, inst_exchange)
             st.session_state["instruments_df"] = df
@@ -1626,10 +1599,10 @@ with tab_inst:
         st.subheader("Search Instrument Token by Symbol")
         col_search_inst, col_search_results = st.columns([1,2])
         with col_search_inst:
-            search_symbol = st.text_input(f"Enter Tradingsymbol (e.g., INFY for {inst_exchange})", value="INFY", key="inst_search_sym")
-            search_exchange = st.selectbox("Specify Exchange for Search", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0, key="inst_search_ex")
+            search_symbol = st.text_input(f"Enter Tradingsymbol (e.g., INFY for {inst_exchange})", value="INFY", key="inst_utils_search_sym")
+            search_exchange = st.selectbox("Specify Exchange for Search", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0, key="inst_utils_search_ex")
             
-            if st.button("Find Token"):
+            if st.button("Find Token", key="inst_utils_find_token_btn"):
                 token = find_instrument_token(df_instruments, search_symbol, search_exchange)
                 if token:
                     st.session_state["last_found_token"] = token
@@ -1652,3 +1625,4 @@ with tab_inst:
         st.dataframe(df_instruments.head(200), use_container_width=True)
     else:
         st.info("No instruments loaded. Click 'Load Instruments for Selected Exchange' above to fetch.")
+```
