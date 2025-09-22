@@ -1113,3 +1113,4 @@ with tab_inst:
                     st.warning(f"Instrument token not found for `{sy}` on `{ex}`. Ensure the symbol and exchange are correct, and the instrument dump for this exchange has been loaded.")
     else:
         st.info("No instruments loaded yet. Click 'Load Instruments' to fetch them.")
+warning
