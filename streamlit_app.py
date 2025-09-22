@@ -1625,4 +1625,3 @@ with tab_inst:
         st.dataframe(df_instruments.head(200), use_container_width=True)
     else:
         st.info("No instruments loaded. Click 'Load Instruments for Selected Exchange' above to fetch.")
-```
