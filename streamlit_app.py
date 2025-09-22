@@ -5,10 +5,20 @@ import pandas as pd
 import json
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, r2_score
+import lightgbm as lgb
+import ta # Technical Analysis library
 
-st.set_page_config(page_title="Kite Connect - Full demo", layout="wide")
-st.title("Kite Connect (Zerodha) — Full Streamlit demo")
+
+st.set_page_config(page_title="Kite Connect - ML & Risk Analysis", layout="wide")
+st.title("Kite Connect (Zerodha) — Machine Learning & Risk Analysis Demo")
 
 # ---------------------------
 # CONFIG / SECRETS
@@ -28,7 +38,7 @@ if not API_KEY or not API_SECRET or not REDIRECT_URI:
     st.stop()
 
 # ---------------------------
-# Helper: init unauth client (used for login URL & instruments download)
+# Helper: init unauth client (used for login URL)
 # ---------------------------
 kite_client = KiteConnect(api_key=API_KEY)
 login_url = kite_client.login_url()
@@ -72,7 +82,7 @@ if "kite_access_token" in st.session_state:
     k.set_access_token(access_token)
 
 # ---------------------------
-# Utility: instruments dump & lookup
+# Utility: instruments lookup (kept as it's essential for fetching historical data)
 # ---------------------------
 @st.cache_data(show_spinner=False)
 def load_instruments(kite_instance, exchange=None):
@@ -139,26 +149,20 @@ def get_full_market_quote(kite_instance, symbol, exchange="NSE"):
 # Fix for historical data
 def get_historical(kite_instance, symbol, from_date, to_date, interval="day", exchange="NSE"):
     try:
-        # First, try to get the instrument token from the session state's loaded instruments_df
         inst_df = st.session_state.get("instruments_df", pd.DataFrame())
-        token = None
-        if not inst_df.empty:
-            token = find_instrument_token(inst_df, symbol, exchange)
+        token = find_instrument_token(inst_df, symbol, exchange)
         
-        # If not found in loaded DF, try fetching directly from Kite and storing
-        if token is None:
-            # Load instruments for the specific exchange (and cache them)
-            st.info(f"Attempting to load instruments for {exchange} to find token for {symbol}...")
+        if not token:
+            # If not found in loaded DF, try fetching directly from Kite and storing
+            st.info(f"Instrument token for {symbol} on {exchange} not found in cache. Attempting to fetch...")
             all_instruments = load_instruments(kite_instance, exchange)
             if not all_instruments.empty:
                 st.session_state["instruments_df"] = all_instruments # Update cached DF
                 token = find_instrument_token(all_instruments, symbol, exchange)
+            
+            if not token:
+                return {"error": f"Instrument token not found for {symbol} on {exchange}. Please ensure instruments are loaded or symbol/exchange is correct."}
         
-        if not token:
-            return {"error": f"Instrument token not found for {symbol} on {exchange}. Please ensure instruments are loaded or symbol/exchange is correct."}
-        
-        # Ensure dates are in the correct format for historical_data API
-        # The API expects datetime objects or ISO 8601 strings
         from_datetime = datetime.combine(from_date, datetime.min.time())
         to_datetime = datetime.combine(to_date, datetime.max.time())
 
@@ -166,6 +170,48 @@ def get_historical(kite_instance, symbol, from_date, to_date, interval="day", ex
         return data
     except Exception as e:
         return {"error": str(e)}
+
+# Function to add technical indicators using 'ta' library for robustness
+def add_indicators(df):
+    if df.empty:
+        return df
+    
+    # Ensure columns are numeric
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # Drop any rows that became NaN due to coercion, or for indicators to calculate
+    df.dropna(subset=['close'], inplace=True)
+    if df.empty:
+        return pd.DataFrame() # Return empty if no valid data remains
+
+    # Moving Averages
+    df['SMA_5'] = ta.trend.sma_indicator(df['close'], window=5)
+    df['SMA_20'] = ta.trend.sma_indicator(df['close'], window=20)
+    
+    # RSI
+    df['RSI'] = ta.momentum.rsi(df['close'], window=14)
+    
+    # MACD
+    macd = ta.trend.MACD(df['close'])
+    df['MACD'] = macd.macd()
+    df['MACD_signal'] = macd.macd_signal()
+    
+    # Bollinger Bands
+    bollinger = ta.volatility.BollingerBands(df['close'])
+    df['Bollinger_High'] = bollinger.bollinger_hband()
+    df['Bollinger_Low'] = bollinger.bollinger_lband()
+    
+    # Daily Return
+    df['Daily_Return'] = df['close'].pct_change() * 100
+    
+    # Lagged Close Price
+    df['Lag_1_Close'] = df['close'].shift(1)
+    
+    df.fillna(method='bfill', inplace=True) # Fill NaNs at the beginning (for early indicator values)
+    df.fillna(method='ffill', inplace=True) # Fill any remaining NaNs
+    return df
 
 # ---------------------------
 # Sidebar quick actions / profile / logout
@@ -184,6 +230,9 @@ with st.sidebar:
         if st.button("Logout (clear token)"):
             st.session_state.pop("kite_access_token", None)
             st.session_state.pop("kite_login_response", None)
+            # Clear all session state for a clean re-run on logout
+            for key in list(st.session_state.keys()):
+                st.session_state.pop(key)
             st.success("Logged out. Please login again.")
             st.experimental_rerun()
     else:
@@ -192,8 +241,8 @@ with st.sidebar:
 # ---------------------------
 # Main UI - Tabs for modules
 # ---------------------------
-tabs = st.tabs(["Portfolio", "Orders", "Market & Historical", "Websocket (stream)", "Mutual Funds", "Instruments Dump & Utils", "Admin/Debug"])
-tab_portfolio, tab_orders, tab_market, tab_ws, tab_mf, tab_inst, tab_debug = tabs
+tabs = st.tabs(["Portfolio", "Orders", "Market & Historical", "Machine Learning Analysis", "Risk & Stress Testing", "Websocket (stream)", "Instruments Utils"])
+tab_portfolio, tab_orders, tab_market, tab_ml, tab_risk, tab_ws, tab_inst = tabs
 
 # ---------------------------
 # TAB: PORTFOLIO
@@ -378,44 +427,363 @@ with tab_market:
 
         st.markdown("---")
         st.subheader("Historical candles")
-        # Load instruments (cached)
-        with st.expander("Instrument dump (load)"):
-            exchange_for_dump = st.selectbox("Instrument dump exchange (for lookup)", ["NSE", "BSE", "NFO", "BCD", "MCX"], index=0, key="inst_exchange")
-            if st.button("Load instrument dump"):
-                # Pass 'k' (authenticated KiteConnect instance) to load_instruments
+        # Ensure instruments are loaded for lookup
+        with st.expander("Load Instruments for Historical Data Lookup"):
+            exchange_for_dump = st.selectbox("Exchange to load instruments for lookup", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0, key="inst_load_exchange")
+            if st.button("Load Instruments Now"):
                 inst_df = load_instruments(k, exchange_for_dump)
                 st.session_state["instruments_df"] = inst_df
                 if not inst_df.empty:
                     st.success(f"Loaded {len(inst_df)} instruments for {exchange_for_dump}")
                 else:
-                    st.warning(f"Could not load instruments for {exchange_for_dump}.")
+                    st.warning(f"Could not load instruments for {exchange_for_dump}. Check API key and permissions.")
 
-        # Retrieve instruments_df from session state for lookups
-        inst_df = st.session_state.get("instruments_df", pd.DataFrame())
+        hist_exchange = st.selectbox("Exchange (for historical data)", ["NSE", "BSE", "NFO"], index=0, key="hist_ex")
+        hist_symbol = st.text_input("Tradingsymbol (e.g., INFY)", value="INFY", key="hist_sym")
+        
+        # Default dates for convenience (e.g., last 3 months)
+        default_to_date = datetime.now().date()
+        default_from_date = default_to_date - timedelta(days=90)
 
-        hist_exchange = st.selectbox("Exchange (for historical)", ["NSE", "BSE", "NFO"], index=0, key="hist_ex")
-        hist_symbol = st.text_input("Historical tradingsymbol (eg INFY)", value="INFY", key="hist_sym")
-        from_date = st.date_input("From date", key="from_dt")
-        to_date = st.date_input("To date", key="to_dt")
+        from_date = st.date_input("From date", value=default_from_date, key="from_dt")
+        to_date = st.date_input("To date", value=default_to_date, key="to_dt")
         interval = st.selectbox("Interval", ["minute", "5minute", "15minute", "30minute", "day", "week", "month"], index=4)
 
         if st.button("Fetch historical data"):
-            # Call the fixed get_historical function, passing 'k'
-            hist_data = get_historical(k, hist_symbol, from_date, to_date, interval, hist_exchange)
-            
-            if "error" in hist_data:
-                st.error(f"Historical fetch failed: {hist_data['error']}")
-                if "Insufficient permission" in hist_data['error']:
-                    st.warning("This error often indicates that your Zerodha API key does not have an active subscription for historical data. Please check your Kite Connect developer console for subscription status.")
+            if "instruments_df" not in st.session_state or st.session_state["instruments_df"].empty:
+                st.error("Please load instruments first from the expander above to enable symbol lookup.")
             else:
-                df = pd.DataFrame(hist_data)
-                if not df.empty:
-                    # normalize datetime
-                    if "date" in df.columns:
-                        df["date"] = pd.to_datetime(df["date"])
-                    st.dataframe(df)
+                hist_data = get_historical(k, hist_symbol, from_date, to_date, interval, hist_exchange)
+                
+                if "error" in hist_data:
+                    st.error(f"Historical fetch failed: {hist_data['error']}")
+                    if "Insufficient permission" in hist_data['error']:
+                        st.warning("This error often indicates that your Zerodha API key does not have an active subscription for historical data. Please check your Kite Connect developer console for subscription status.")
                 else:
-                    st.write("No historical data returned.")
+                    df = pd.DataFrame(hist_data)
+                    if not df.empty:
+                        # Ensure 'date' column is datetime and set as index
+                        if "date" in df.columns:
+                            df["date"] = pd.to_datetime(df["date"])
+                            df.set_index("date", inplace=True)
+                            df.sort_index(inplace=True) # Ensure chronological order
+
+                        st.session_state["historical_data"] = df # Store for ML analysis
+                        st.success(f"Successfully fetched {len(df)} records for {hist_symbol} ({interval}).")
+                        st.dataframe(df.head()) # Show a preview
+
+                        # Plotting historical data
+                        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                                            vertical_spacing=0.03, 
+                                            row_heights=[0.7, 0.3])
+
+                        # Candlestick chart
+                        fig.add_trace(go.Candlestick(x=df.index,
+                                                    open=df['open'],
+                                                    high=df['high'],
+                                                    low=df['low'],
+                                                    close=df['close'],
+                                                    name='Candlestick'), row=1, col=1)
+
+                        # Volume chart
+                        fig.add_trace(go.Bar(x=df.index, y=df['volume'], name='Volume', marker_color='blue'), row=2, col=1)
+
+                        fig.update_layout(title_text=f"{hist_symbol} Historical Data - {interval}",
+                                          xaxis_rangeslider_visible=False,
+                                          height=600,
+                                          template="plotly_white") # A clean theme
+                        fig.update_yaxes(title_text="Price", row=1, col=1)
+                        fig.update_yaxes(title_text="Volume", row=2, col=1)
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("No historical data returned for the selected period and symbol.")
+
+# ---------------------------
+# TAB: MACHINE LEARNING ANALYSIS
+# ---------------------------
+with tab_ml:
+    st.header("Machine Learning Based Analysis")
+
+    if not k:
+        st.info("Login first to perform ML analysis.")
+    else:
+        st.write("This module allows you to perform machine learning analysis on historical price data.")
+        st.write("First, ensure you have fetched historical data from the 'Market & Historical' tab.")
+
+        historical_data = st.session_state.get("historical_data")
+
+        if historical_data is None or historical_data.empty:
+            st.warning("No historical data available. Please fetch data from the 'Market & Historical' tab first.")
+        else:
+            st.subheader("1. Data Preprocessing & Feature Engineering")
+            st.dataframe(historical_data.head())
+
+            if st.button("Add Technical Indicators & Prepare Data"):
+                df_with_indicators = add_indicators(historical_data.copy())
+                if df_with_indicators.empty:
+                    st.error("Failed to add indicators. Data might be too short or contains invalid values.")
+                    st.session_state["ml_data"] = None
+                else:
+                    st.session_state["ml_data"] = df_with_indicators
+                    st.success("Technical indicators added to data.")
+                    st.dataframe(df_with_indicators.head())
+                    
+                    # Plotting indicators
+                    fig_indicators = make_subplots(rows=4, cols=1, shared_xaxes=True, 
+                                                vertical_spacing=0.05,
+                                                row_heights=[0.5, 0.15, 0.15, 0.15],
+                                                subplot_titles=("Price & Moving Averages/Bollinger Bands", "RSI", "MACD", "Volume"))
+
+                    # Candlestick and SMAs, Bollinger Bands
+                    fig_indicators.add_trace(go.Candlestick(x=df_with_indicators.index,
+                                                            open=df_with_indicators['open'],
+                                                            high=df_with_indicators['high'],
+                                                            low=df_with_indicators['low'],
+                                                            close=df_with_indicators['close'],
+                                                            name='Candlestick'), row=1, col=1)
+                    fig_indicators.add_trace(go.Scatter(x=df_with_indicators.index, y=df_with_indicators['SMA_5'], mode='lines', name='SMA 5', line=dict(color='orange')), row=1, col=1)
+                    fig_indicators.add_trace(go.Scatter(x=df_with_indicators.index, y=df_with_indicators['SMA_20'], mode='lines', name='SMA 20', line=dict(color='purple')), row=1, col=1)
+                    fig_indicators.add_trace(go.Scatter(x=df_with_indicators.index, y=df_with_indicators['Bollinger_High'], mode='lines', name='Bollinger High', line=dict(color='green', dash='dot')), row=1, col=1)
+                    fig_indicators.add_trace(go.Scatter(x=df_with_indicators.index, y=df_with_indicators['Bollinger_Low'], mode='lines', name='Bollinger Low', line=dict(color='red', dash='dot')), row=1, col=1)
+
+                    # RSI
+                    fig_indicators.add_trace(go.Scatter(x=df_with_indicators.index, y=df_with_indicators['RSI'], mode='lines', name='RSI', line=dict(color='blue')), row=2, col=1)
+                    fig_indicators.add_hline(y=70, line_dash="dash", line_color="red", annotation_text="Overbought", annotation_position="top right", row=2, col=1)
+                    fig_indicators.add_hline(y=30, line_dash="dash", line_color="green", annotation_text="Oversold", annotation_position="bottom right", row=2, col=1)
+
+                    # MACD
+                    fig_indicators.add_trace(go.Scatter(x=df_with_indicators.index, y=df_with_indicators['MACD'], mode='lines', name='MACD', line=dict(color='green')), row=3, col=1)
+                    fig_indicators.add_trace(go.Scatter(x=df_with_indicators.index, y=df_with_indicators['MACD_signal'], mode='lines', name='MACD Signal', line=dict(color='red')), row=3, col=1)
+                    
+                    # Volume
+                    fig_indicators.add_trace(go.Bar(x=df_with_indicators.index, y=df_with_indicators['volume'], name='Volume', marker_color='blue'), row=4, col=1)
+
+                    fig_indicators.update_layout(title_text=f"{historical_data.columns.name if historical_data.columns.name else 'Instrument'} Price with Technical Indicators",
+                                                xaxis_rangeslider_visible=False,
+                                                height=900,
+                                                template="plotly_white")
+                    st.plotly_chart(fig_indicators, use_container_width=True)
+
+            ml_data = st.session_state.get("ml_data")
+            if ml_data is not None and not ml_data.empty:
+                st.subheader("2. Machine Learning Model Training")
+
+                model_type = st.selectbox("Select ML Model", ["Linear Regression", "Random Forest Regressor", "LightGBM Regressor"])
+                target_column = st.selectbox("Select Target Variable (e.g., 'close' for next day close price)", ["close"])
+                
+                # Shift target for prediction: predicting next period's close price
+                ml_data['target'] = ml_data[target_column].shift(-1)
+                ml_data.dropna(subset=['target'], inplace=True) # Drop the last row as it won't have a target
+                
+                features = [col for col in ml_data.columns if col not in ['open', 'high', 'low', 'close', 'volume', 'target']]
+                if not features:
+                    st.warning("No features available after dropping target and basic OHLCV columns. Please ensure indicators are added and valid.")
+                    st.stop()
+                
+                # Check for infinite values in features or target and replace with NaN, then drop
+                ml_data.replace([np.inf, -np.inf], np.nan, inplace=True)
+                ml_data.dropna(subset=features + ['target'], inplace=True)
+
+
+                X = ml_data[features]
+                y = ml_data['target']
+
+                if X.empty or y.empty:
+                    st.warning("Not enough clean data after preprocessing to train the model. Try a longer historical period.")
+                    st.stop()
+
+                test_size = st.slider("Test Size Percentage", min_value=10, max_value=50, value=20) / 100.0
+                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, shuffle=False)
+
+                st.write(f"Training data size: {len(X_train)} samples")
+                st.write(f"Testing data size: {len(X_test)} samples")
+
+
+                if st.button(f"Train {model_type} Model"):
+                    if len(X_train) == 0 or len(X_test) == 0:
+                        st.error("Insufficient data for training or testing after split. Adjust test size or fetch more data.")
+                    else:
+                        model = None
+                        if model_type == "Linear Regression":
+                            model = LinearRegression()
+                        elif model_type == "Random Forest Regressor":
+                            model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1) # Use all cores
+                        elif model_type == "LightGBM Regressor":
+                            model = lgb.LGBMRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+
+                        if model:
+                            with st.spinner(f"Training {model_type} model..."):
+                                model.fit(X_train, y_train)
+                                y_pred = model.predict(X_test)
+
+                            st.session_state["ml_model"] = model
+                            st.session_state["y_test"] = y_test
+                            st.session_state["y_pred"] = y_pred
+                            st.session_state["X_test_ml"] = X_test
+                            st.session_state["ml_features"] = features # Store features for real-time simulation
+
+                            st.success(f"{model_type} Model Trained!")
+                            st.write(f"Mean Squared Error (MSE): {mean_squared_error(y_test, y_pred):.4f}")
+                            st.write(f"R2 Score: {r2_score(y_test, y_pred):.4f}")
+
+                            # Plotting predictions
+                            pred_df = pd.DataFrame({'Actual': y_test, 'Predicted': y_pred}, index=y_test.index)
+                            fig_pred = go.Figure()
+                            fig_pred.add_trace(go.Scatter(x=pred_df.index, y=pred_df['Actual'], mode='lines', name='Actual Price'))
+                            fig_pred.add_trace(go.Scatter(x=pred_df.index, y=pred_df['Predicted'], mode='lines', name='Predicted Price', line=dict(dash='dot')))
+                            fig_pred.update_layout(title_text=f"{model_type} Actual vs. Predicted Prices on Test Set", 
+                                                height=500, xaxis_title="Date", yaxis_title="Price",
+                                                template="plotly_white")
+                            st.plotly_chart(fig_pred, use_container_width=True)
+            else:
+                st.info("Please add technical indicators first to proceed with ML training.")
+
+            st.subheader("3. Real-time Price Prediction (Simulated)")
+            st.write("This section demonstrates the *workflow* for using a trained model for real-time predictions.")
+            st.write("For an actual real-time prediction, a live system would typically:")
+            st.markdown("- Continuously fetch the latest OHLCV data and current LTP using the WebSocket or direct API calls.")
+            st.markdown("- Aggregate this data into candles (if predicting at interval, e.g., 5-min candles).")
+            st.markdown("- Compute the required technical indicators based on the most recent complete data points.")
+            st.markdown("- Feed these latest features into the trained model to get a prediction for the next period's close price.")
+
+            if st.session_state.get("ml_model") and st.session_state.get("X_test_ml") is not None:
+                model = st.session_state["ml_model"]
+                X_test_ml = st.session_state["X_test_ml"]
+                ml_features = st.session_state["ml_features"]
+
+                st.write(f"Model trained: {type(model).__name__}")
+                st.write(f"Features used for prediction: {', '.join(ml_features)}")
+
+                # Simulate a real-time data point using the last known features from our test set
+                if not X_test_ml.empty:
+                    latest_features_df = X_test_ml.iloc[[-1]] # Take the last row of features from test set
+                    if st.button("Simulate Real-time Prediction"):
+                        with st.spinner("Generating simulated prediction..."):
+                            simulated_prediction = model.predict(latest_features_df)[0]
+                        st.success(f"Simulated next period close price prediction: **{simulated_prediction:.2f}**")
+                        st.info("This is a simulation using the last available test data point's features. In a live trading system, these features would be derived from fresh, real-time market data.")
+                else:
+                    st.warning("No test data available for simulation. Please train the model first.")
+            else:
+                st.info("Train a machine learning model first to see a real-time prediction simulation.")
+
+# ---------------------------
+# TAB: RISK & STRESS TESTING
+# ---------------------------
+with tab_risk:
+    st.header("Risk & Stress Testing Models and Algorithms")
+
+    if not k:
+        st.info("Login first to perform risk analysis.")
+    else:
+        st.write("This module helps you understand the potential risks and perform stress tests on a specific instrument using its historical data.")
+        st.write("First, ensure you have fetched historical data from the 'Market & Historical' tab.")
+        
+        historical_data = st.session_state.get("historical_data")
+
+        if historical_data is None or historical_data.empty:
+            st.warning("No historical data available. Please fetch data from the 'Market & Historical' tab first.")
+        else:
+            if historical_data.index.duplicated().any():
+                historical_data = historical_data.loc[~historical_data.index.duplicated(keep='first')]
+            
+            # Ensure 'close' column is numeric for calculations
+            historical_data['close'] = pd.to_numeric(historical_data['close'], errors='coerce')
+            historical_data.dropna(subset=['close'], inplace=True)
+
+            daily_returns = historical_data['close'].pct_change().dropna()
+            
+            if daily_returns.empty:
+                st.warning("Not enough valid data to compute daily returns. Ensure historical data is fetched correctly and contains multiple valid 'close' prices.")
+                st.stop()
+
+            st.subheader("1. Volatility Analysis (Historical)")
+            st.write("Volatility measures the degree of variation of a trading price series over time.")
+            
+            st.dataframe(daily_returns.describe())
+
+            # Annualized volatility (assuming 252 trading days for 'day' interval, adjust for others if needed)
+            trading_days_per_year = 252 # Typical for equities
+            annualized_volatility = daily_returns.std() * np.sqrt(trading_days_per_year) * 100
+            st.metric(label="Annualized Volatility (based on daily returns)", value=f"{annualized_volatility:.2f}%")
+
+            fig_volatility = go.Figure()
+            fig_volatility.add_trace(go.Histogram(x=daily_returns, nbinsx=50, name='Daily Returns', marker_color='#1f77b4'))
+            fig_volatility.update_layout(title_text='Distribution of Daily Returns',
+                                         xaxis_title='Daily Return (%)',
+                                         yaxis_title='Frequency',
+                                         height=400, template="plotly_white")
+            st.plotly_chart(fig_volatility, use_container_width=True)
+
+            st.subheader("2. Value at Risk (VaR) Calculation (Historical Method)")
+            st.write("Value at Risk (VaR) estimates the maximum expected loss over a specific time horizon at a given confidence level.")
+            
+            confidence_level = st.slider("Confidence Level (%)", min_value=90, max_value=99, value=95, step=1)
+            holding_period_var = st.number_input("Holding Period for VaR (days)", min_value=1, value=1)
+            
+            # Calculate VaR using the historical percentile method
+            # For 1-day VaR, directly use daily_returns
+            var_percentile_1day = np.percentile(daily_returns, 100 - confidence_level)
+
+            st.write(f"For a **{holding_period_var}-day holding period**:")
+            # Scale 1-day VaR for multiple days (simplified assumption: returns are independent and identically distributed)
+            # This is a simplification; more complex methods exist for multi-period VaR
+            var_percentile_multiday = var_percentile_1day * np.sqrt(holding_period_var) # Using root-t rule
+
+            st.metric(label=f"Value at Risk ({confidence_level}%)", value=f"{abs(var_percentile_multiday):.2f}% (over {holding_period_var} days)")
+
+            current_price = historical_data['close'].iloc[-1]
+            potential_loss = (abs(var_percentile_multiday) / 100) * current_price
+            st.write(f"This means, with {confidence_level}% confidence, the maximum potential loss on a position currently worth **₹{current_price:.2f}** is approximately **₹{potential_loss:.2f}** over {holding_period_var} day(s).")
+            
+            # Plotting VaR on returns distribution
+            fig_var = go.Figure()
+            fig_var.add_trace(go.Histogram(x=daily_returns, nbinsx=50, name='Daily Returns', marker_color='#1f77b4'))
+            fig_var.add_vline(x=var_percentile_1day, line_dash="dash", line_color="red", 
+                              annotation_text=f"1-Day VaR {confidence_level}%: {var_percentile_1day:.2f}%", 
+                              annotation_position="top right")
+            fig_var.update_layout(title_text=f'Daily Returns Distribution with {confidence_level}% VaR',
+                                  xaxis_title='Daily Return (%)',
+                                  yaxis_title='Frequency',
+                                  height=400, template="plotly_white")
+            st.plotly_chart(fig_var, use_container_width=True)
+
+            st.subheader("3. Stress Testing (Scenario Analysis)")
+            st.write("Stress testing evaluates the impact of extreme but plausible market movements on an asset's price.")
+            
+            # Pre-defined scenarios
+            scenarios = {
+                "Historical Worst Day Drop": {"type": "historical", "percent": daily_returns.min()},
+                "Global Financial Crisis (-20%)": {"type": "fixed", "percent": -20.0},
+                "Flash Crash (-10%)": {"type": "fixed", "percent": -10.0},
+                "Moderate Correction (-5%)": {"type": "fixed", "percent": -5.0},
+                "Significant Rally (+10%)": {"type": "fixed", "percent": 10.0}
+            }
+
+            scenario_key = st.selectbox("Select Stress Scenario", list(scenarios.keys()))
+            
+            if st.button("Run Stress Test"):
+                current_price = historical_data['close'].iloc[-1]
+                scenario_data = scenarios[scenario_key]
+                stressed_price = 0
+                scenario_change_percent = 0
+
+                if scenario_data["type"] == "historical":
+                    scenario_change_percent = scenario_data["percent"]
+                    stressed_price = current_price * (1 + scenario_change_percent / 100)
+                    st.write(f"Scenario: **{scenario_key}** (Worst historical daily drop: **{scenario_change_percent:.2f}%** in daily returns)")
+                else: # fixed scenarios
+                    scenario_change_percent = scenario_data["percent"]
+                    stressed_price = current_price * (1 + scenario_change_percent / 100)
+                    st.write(f"Scenario: **{scenario_key}** (Fixed change: **{scenario_change_percent:.2f}%**)")
+                
+                st.metric(label="Current Price", value=f"₹{current_price:.2f}")
+                st.metric(label="Stressed Price", value=f"₹{stressed_price:.2f}")
+                st.metric(label="Potential Price Change", value=f"₹{(stressed_price - current_price):.2f}")
+                st.metric(label="Percentage Change", value=f"{scenario_change_percent:.2f}%")
+
+                st.info("This is a simplified stress test on a single instrument. A comprehensive stress test involves modeling the impact across an entire portfolio, considering correlations between assets, and the behavior of derivatives.")
+
 
 # ---------------------------
 # TAB: WEBSOCKET (Ticker)
@@ -437,227 +805,182 @@ with tab_ws:
         if "kt_ticks" not in st.session_state:
             st.session_state["kt_ticks"] = []
 
-        symbol_for_ws = st.text_input("Instrument token(s) comma separated (e.g. 738561,3409) OR use instrument dump lookup", value="")
-        st.caption("Note: provide numeric instrument_token(s) or leave blank to subscribe none (you can subscribe later).")
+        # Autoload instruments if not already loaded, for convenience in getting tokens
+        if "instruments_df" not in st.session_state or st.session_state["instruments_df"].empty:
+            st.info("Loading instruments for NSE to facilitate instrument token lookup for WebSocket.")
+            nse_instruments = load_instruments(k, "NSE")
+            if not nse_instruments.empty:
+                st.session_state["instruments_df"] = nse_instruments
+                st.success(f"Loaded {len(nse_instruments)} instruments for NSE.")
+            else:
+                st.warning("Could not load NSE instruments. WebSocket token lookup might be limited.")
+        
+        # Helper to look up token from trading symbol
+        ws_exchange = st.selectbox("Exchange for WebSocket symbol lookup", ["NSE", "BSE", "NFO"], index=0, key="ws_lookup_ex")
+        ws_tradingsymbol = st.text_input("Tradingsymbol for WebSocket (e.g., INFY)", value="INFY", key="ws_lookup_sym")
+        
+        instrument_token_for_ws = None
+        if st.button("Lookup Instrument Token"):
+            if "instruments_df" in st.session_state and not st.session_state["instruments_df"].empty:
+                instrument_token_for_ws = find_instrument_token(st.session_state["instruments_df"], ws_tradingsymbol, ws_exchange)
+                if instrument_token_for_ws:
+                    st.success(f"Found instrument_token for {ws_tradingsymbol}: {instrument_token_for_ws}")
+                    st.session_state["ws_instrument_token"] = str(instrument_token_for_ws) # Store as string for input
+                else:
+                    st.warning(f"Could not find instrument token for {ws_tradingsymbol} on {ws_exchange}.")
+            else:
+                st.warning("Please load instruments first from 'Market & Historical' tab or 'Instruments Utils' tab.")
+
+        # Use the looked-up token or allow manual input
+        symbol_for_ws = st.text_input("Instrument token(s) comma separated (e.g. 738561,3409)", 
+                                      value=st.session_state.get("ws_instrument_token", ""),
+                                      key="ws_symbol_input")
+        st.caption("Enter numeric instrument token(s) or use the lookup above. Leave blank to subscribe none (you can subscribe later).")
 
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Start ticker") and not st.session_state["kt_running"]:
                 try:
-                    # create ticker
                     access_token = st.session_state["kite_access_token"]
                     user_id = st.session_state["kite_login_response"].get("user_id")
-                    # KiteTicker signature: KiteTicker(api_key, access_token) or (user_id, access_token, api_key) depending on version
+                    
                     try:
-                        kt = KiteTicker(user_id, access_token, API_KEY)  # newer signature
+                        kt = KiteTicker(user_id, access_token, API_KEY)
                     except Exception:
-                        kt = KiteTicker(API_KEY, access_token)  # fallback older signature
+                        kt = KiteTicker(API_KEY, access_token)
 
                     st.session_state["kt_ticker"] = kt
                     st.session_state["kt_running"] = True
                     st.session_state["kt_ticks"] = []
+                    st.session_state["kt_status_message"] = "Ticker connecting..." # Initial status
 
-                    # define callbacks
                     def on_connect(ws, response):
                         st.session_state["kt_ticks"].append({"event": "connected", "time": datetime.utcnow().isoformat()})
-                        # subscribe if tokens provided
+                        st.session_state["kt_status_message"] = "Ticker connected. Subscribing..."
                         if symbol_for_ws:
                             tokens = [int(x.strip()) for x in symbol_for_ws.split(",") if x.strip()]
-                            if tokens: # only subscribe if there are actual tokens
+                            if tokens:
                                 try:
                                     ws.subscribe(tokens)
-                                    ws.set_mode(ws.MODE_FULL, tokens) # Attempt to set mode for subscribed tokens
+                                    ws.set_mode(ws.MODE_FULL, tokens)
+                                    st.session_state["kt_status_message"] = f"Subscribed to {len(tokens)} tokens."
                                 except Exception as e:
                                     st.session_state["kt_ticks"].append({"event": "subscribe_error", "error": str(e), "time": datetime.utcnow().isoformat()})
+                                    st.session_state["kt_status_message"] = f"Subscription error: {e}"
+                            else:
+                                st.session_state["kt_status_message"] = "Connected, but no tokens provided for subscription."
                         else:
-                            # If no tokens provided, just connect and don't subscribe initially
-                            pass 
+                            st.session_state["kt_status_message"] = "Connected, no tokens specified for initial subscription."
 
                     def on_ticks(ws, ticks):
-                        # append latest ticks (limit to 200)
                         for t in ticks:
                             t["_ts"] = datetime.utcnow().isoformat()
                             st.session_state["kt_ticks"].append(t)
                         if len(st.session_state["kt_ticks"]) > 200:
                             st.session_state["kt_ticks"] = st.session_state["kt_ticks"][-200:]
+                        # Small trick to force Streamlit to re-render the tick dataframe
+                        st.session_state["_last_tick_update"] = time.time()
 
                     def on_close(ws, code, reason):
                         st.session_state["kt_ticks"].append({"event": "closed", "code": code, "reason": reason, "time": datetime.utcnow().isoformat()})
                         st.session_state["kt_running"] = False
+                        st.session_state["kt_status_message"] = f"Ticker disconnected: {reason} (Code: {code})"
 
-                    # bind callbacks (function names depend on pykiteconnect version)
-                    # Note: Direct assignment to kt.on_connect etc. is correct for pykiteconnect
+                    def on_error(ws, code, reason):
+                        st.session_state["kt_ticks"].append({"event": "error", "code": code, "reason": reason, "time": datetime.utcnow().isoformat()})
+                        st.session_state["kt_status_message"] = f"Ticker error: {reason} (Code: {code})"
+
+
                     kt.on_connect = on_connect
                     kt.on_ticks = on_ticks
                     kt.on_close = on_close
+                    kt.on_error = on_error # Add error handler
 
-                    # run ticker in a background thread
                     def run_ticker():
                         try:
                             kt.connect(threaded=True)
-                            # connect(threaded=True) will start internal loop; keep this thread alive waiting for stop
                             while st.session_state["kt_running"]:
-                                time.sleep(0.5)
+                                time.sleep(0.5) # Keep the thread alive
                         except Exception as e:
-                            st.session_state["kt_ticks"].append({"event": "error", "error": str(e)})
+                            st.session_state["kt_ticks"].append({"event": "fatal_error", "error": str(e)})
                             st.session_state["kt_running"] = False
+                            st.session_state["kt_status_message"] = f"Fatal ticker error: {e}"
 
                     th = threading.Thread(target=run_ticker, daemon=True)
                     st.session_state["kt_thread"] = th
                     th.start()
-                    st.success("Ticker started (background thread).")
+                    st.success("Ticker start attempt initiated. Check status below.")
                 except Exception as e:
                     st.error(f"Failed to start ticker: {e}")
+                    st.session_state["kt_status_message"] = f"Failed to start ticker: {e}"
 
         with col2:
             if st.button("Stop ticker") and st.session_state.get("kt_running"):
                 try:
                     kt = st.session_state.get("kt_ticker")
                     if kt:
-                        try:
-                            kt.disconnect()
-                        except Exception:
-                            try:
-                                # Fallback for older versions or if disconnect fails
-                                kt.stop() 
-                            except Exception:
-                                pass
+                        kt.disconnect()
                     st.session_state["kt_running"] = False
+                    st.session_state["kt_status_message"] = "Ticker explicitly stopped."
                     st.success("Ticker stopped.")
                 except Exception as e:
                     st.error(f"Failed to stop ticker: {e}")
+                    st.session_state["kt_status_message"] = f"Failed to stop ticker: {e}"
+        
+        # Live status updates
+        st.info(f"Ticker Status: {st.session_state.get('kt_status_message', 'Not started')}")
 
         st.markdown("#### Latest ticks (most recent 100)")
         ticks = st.session_state.get("kt_ticks", [])
+        
+        # Use a placeholder and update it to show live ticks without rerunning the whole app
+        tick_placeholder = st.empty()
+        
         if ticks:
-            # show last 50 in reverse order (most recent first)
             df_ticks = pd.json_normalize(ticks[-100:][::-1])
-            st.dataframe(df_ticks)
+            # Only display a subset of columns to keep it readable, or allow user to select
+            display_cols = ['_ts', 'instrument_token', 'last_price', 'ohlc.open', 'ohlc.high', 'ohlc.low', 'ohlc.close', 'volume', 'change']
+            
+            # Filter available columns
+            available_cols = [col for col in display_cols if col in df_ticks.columns]
+            
+            tick_placeholder.dataframe(df_ticks[available_cols], use_container_width=True)
         else:
-            st.write("No ticks yet. Start ticker and/or subscribe tokens.")
+            tick_placeholder.write("No ticks yet. Start ticker and/or subscribe tokens.")
 
 # ---------------------------
-# TAB: MUTUAL FUNDS
-# ---------------------------
-with tab_mf:
-    st.header("Mutual funds")
-
-    if not k:
-        st.info("Login first to use mutual funds APIs.")
-    else:
-        st.subheader("MF Instruments")
-        col1, col2 = st.columns([2,1])
-        with col1:
-            if st.button("Load MF instruments"):
-                try:
-                    mf_inst = k.get_mf_instruments()
-                    st.session_state["mf_instruments"] = pd.DataFrame(mf_inst)
-                    st.success(f"Loaded {len(mf_inst)} mutual fund instruments")
-                except Exception as e:
-                    st.error(f"Error loading MF instruments: {e}")
-        with col2:
-            if st.button("Show saved MF instruments"):
-                df = st.session_state.get("mf_instruments", pd.DataFrame())
-                if df.empty:
-                    st.info("No MF instruments loaded yet.")
-                else:
-                    st.dataframe(df.head(200))
-
-        st.markdown("---")
-        st.subheader("Place MF order (SIP / Lumpsum)")
-        with st.form("place_mf"):
-            tradingsymbol = st.text_input("Tradingsymbol (scheme code or folio id)", value="")
-            transaction_type = st.selectbox("Transaction type", ["BUY", "SELL"], index=0)
-            quantity = st.number_input("Quantity (units)", min_value=0.0, format="%.3f", value=0.0)
-            amount = st.text_input("Amount (for lumpsum)", value="")
-            # If using place_mf_order, pass relevant args per API docs
-            submit_mf = st.form_submit_button("Place MF order")
-            if submit_mf:
-                try:
-                    mf_args = {
-                        # example keys; actual required keys depend on Kite's MF API.
-                        "tradingsymbol": tradingsymbol,
-                        "transaction_type": transaction_type,
-                    }
-                    if quantity and quantity > 0:
-                        mf_args["quantity"] = float(quantity)
-                    if amount:
-                        mf_args["amount"] = float(amount)
-                    
-                    # You might need to add `scheme_type` or other required fields based on Kite MF API documentation
-                    # For example:
-                    # mf_args["scheme_type"] = "SIP" if is_sip else "PURCHASE" 
-                    # mf_args["tag"] = "MySIPOrder"
-
-                    resp = k.place_mf_order(**mf_args)
-                    st.success("MF order response")
-                    st.json(resp)
-                except Exception as e:
-                    st.error(f"Place MF order failed (check required params): {e}")
-
-        st.markdown("---")
-        if st.button("Get MF orders"):
-            try:
-                mf_orders = k.get_mf_orders()
-                st.dataframe(pd.DataFrame(mf_orders))
-            except Exception as e:
-                st.error(f"Get MF orders failed: {e}")
-
-# ---------------------------
-# TAB: INSTRUMENTS DUMP & UTILS
+# TAB: INSTRUMENTS UTILS
 # ---------------------------
 with tab_inst:
-    st.header("Instruments dump & helper utilities")
-    inst_exchange = st.selectbox("Load instruments for exchange", ["NSE", "BSE", "NFO", "BCD", "MCX"], index=0)
-    if st.button("Load instruments for exchange (cached)"):
+    st.header("Instrument Lookup and Utilities")
+    st.write("This utility helps you find instrument tokens, which are essential for fetching historical data or subscribing to live market data via WebSocket.")
+    
+    inst_exchange = st.selectbox("Select Exchange to Load Instruments", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0)
+    if st.button("Load Instruments for Selected Exchange (cached)"):
         try:
-            # Pass 'k' (authenticated KiteConnect instance) to load_instruments
             df = load_instruments(k, inst_exchange)
             st.session_state["instruments_df"] = df
-            st.success(f"Loaded {len(df)} instruments for {inst_exchange}")
-        except Exception as e:
-            st.error(f"Load instruments failed: {e}")
-
-    df = st.session_state.get("instruments_df", pd.DataFrame())
-    if not df.empty:
-        st.write("Search by trading symbol & exchange")
-        sy = st.text_input("Symbol to search (tradingsymbol)", value="INFY", key="inst_search_sym")
-        if st.button("Find instrument token"):
-            # Pass exchange to find_instrument_token
-            token = find_instrument_token(df, sy, inst_exchange)
-            if token:
-                st.success(f"Found instrument_token: {token}")
+            if not df.empty:
+                st.success(f"Loaded {len(df)} instruments for {inst_exchange}.")
             else:
-                st.warning("Not found. Try loading correct exchange dump or exact tradingsymbol.")
+                st.warning(f"Could not load instruments for {inst_exchange}. Check API permissions or if the exchange has instruments available.")
+        except Exception as e:
+            st.error(f"Failed to load instruments: {e}")
 
-        st.markdown("Preview instruments (first 200 rows)")
-        st.dataframe(df.head(200))
+    df_instruments = st.session_state.get("instruments_df", pd.DataFrame())
+    if not df_instruments.empty:
+        st.subheader("Search Instrument Token")
+        search_symbol = st.text_input(f"Enter Tradingsymbol (e.g., INFY for {inst_exchange})", value="INFY", key="inst_search_sym")
+        search_exchange = st.selectbox("Specify Exchange for Search", ["NSE", "BSE", "NFO", "CDS", "MCX"], index=0, key="inst_search_ex")
+        
+        if st.button("Find Token"):
+            token = find_instrument_token(df_instruments, search_symbol, search_exchange)
+            if token:
+                st.success(f"Found instrument_token for {search_symbol} on {search_exchange}: **{token}**")
+            else:
+                st.warning(f"Instrument token not found for '{search_symbol}' on '{search_exchange}'. Ensure correct symbol/exchange and that instruments for this exchange are loaded.")
+
+        st.subheader("Preview Loaded Instruments (first 200 rows)")
+        st.dataframe(df_instruments.head(200), use_container_width=True)
     else:
-        st.info("No instruments loaded. Click Load instruments to fetch.")
-
-# ---------------------------
-# TAB: ADMIN / DEBUG
-# ---------------------------
-with tab_debug:
-    st.header("Admin / debug")
-    st.write("Session keys (sensitive values hidden):")
-    safe_view = {k: (type(v).__name__ if k != "kite_login_response" else "login_response_present") for k, v in st.session_state.items()}
-    st.json(safe_view)
-    st.markdown("---")
-    if st.button("Show raw login response (dangerous)"):
-        lr = st.session_state.get("kite_login_response")
-        st.write(json.dumps(lr, default=str, indent=2))
-    st.markdown("---")
-    st.write("Library versions:")
-    try:
-        import kiteconnect, pkg_resources
-        st.write("pykiteconnect:", pkg_resources.get_distribution("kiteconnect").version)
-    except Exception:
-        st.write("pykiteconnect not found or version unknown")
-
-    st.markdown("## Notes")
-    st.write("""
-    - request_token is single-use and short-lived. If you see `Token is invalid or has expired`, re-login and exchange immediately.
-    - For production: exchange request_token on a secure server; don't keep api_secret in public client code.
-    - If MF / some endpoints methods raise AttributeError, check your pykiteconnect version and refer to docs for exact method names (they map closely to the HTTP endpoints).
-    """)
+        st.info("No instruments loaded. Click 'Load Instruments for Selected Exchange' above to fetch data.")
