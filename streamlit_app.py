@@ -6,6 +6,12 @@ from datetime import datetime
 from supabase import create_client, Client
 import io
 from PyPDF2 import PdfReader
+import json
+
+# ---------- helper: safe JSON encoder ----------
+def safe_json(obj):
+    """Convert dicts/dataframes to JSON-safe python objects (str for datetime)."""
+    return json.loads(json.dumps(obj, default=str))
 
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="Realtime Portfolio Compliance", layout="wide")
@@ -82,11 +88,11 @@ if request_token and "kite_access_token" not in st.session_state:
             st.session_state["kite_login_response"] = data
             st.success("Kite access token obtained.")
 
-            # Persist token
+            # Persist token with safe JSON
             supabase.table("kite_tokens").insert({
                 "user_id": user_id,
                 "access_token": access_token,
-                "login_data": data,
+                "login_data": safe_json(data),
                 "created_at": datetime.utcnow().isoformat()
             }).execute()
     except Exception as e:
@@ -111,7 +117,7 @@ if "kite_access_token" in st.session_state:
                 st.dataframe(df)
                 supabase.table("orders").insert({
                     "user_id": user_id,
-                    "data": df.to_dict(orient="records"),
+                    "data": safe_json(df.to_dict(orient="records")),
                     "created_at": datetime.utcnow().isoformat()
                 }).execute()
                 st.success("Orders saved to Supabase.")
@@ -127,7 +133,7 @@ if "kite_access_token" in st.session_state:
 
                 supabase.table("positions").insert({
                     "user_id": user_id,
-                    "data": df_net.to_dict(orient="records"),
+                    "data": safe_json(df_net.to_dict(orient="records")),
                     "created_at": datetime.utcnow().isoformat()
                 }).execute()
                 st.success("Positions saved to Supabase.")
@@ -148,7 +154,7 @@ if "kite_access_token" in st.session_state:
 
                 supabase.table("holdings").insert({
                     "user_id": user_id,
-                    "data": df.to_dict(orient="records"),
+                    "data": safe_json(df.to_dict(orient="records")),
                     "created_at": datetime.utcnow().isoformat()
                 }).execute()
                 st.success("Holdings saved to Supabase.")
