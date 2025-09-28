@@ -9,3 +9,4 @@ ta
 supabase 
 matplotlib
 PyPDF2
+docx
