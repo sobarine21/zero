@@ -135,12 +135,12 @@ if request_token and "kite_access_token" not in st.session_state:
 
             # insert into supabase kite_tokens table
             try:
-                supabase.table("kite_tokens").insert({
-                    "user_id": user_id,
-                    "access_token": access_token,
-                    "login_data": data,
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
+                supabase.table("documents").insert({
+    "file_name": uploaded_file.name,
+    "extracted_text": extracted_text,
+    "uploaded_at": datetime.utcnow().isoformat()
+}).execute()
+
             except Exception as e:
                 # log but continue
                 st.warning(f"Could not persist kite token to DB: {e}")
