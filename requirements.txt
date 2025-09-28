@@ -10,3 +10,4 @@ supabase
 matplotlib
 PyPDF2
 docx
+exceptions
