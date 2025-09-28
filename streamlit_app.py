@@ -270,17 +270,18 @@ if "kite_access_token" in st.session_state:
                     fund_limits["max_position"] = int(max_match.group(1))
                     mandate_summary = f"Max position: {fund_limits['max_position']}"
 
-                if extracted_text:
-                    supabase.table("documents").insert({
-                        "user_id": user_id,
-                        "file_name": fname,
-                        "extracted_text": extracted_text,
-                        "fund_limits": fund_limits,
-                        "mandate_summary": mandate_summary,
-                        "uploaded_at": datetime.utcnow().isoformat()
-                    }).execute()
-                    st.success(f"Saved extracted text for {fname}")
-                    st.text_area("Preview (first 2000 chars)", extracted_text[:2000], height=300)
-
+              if extracted_text:
+    supabase.table("documents").insert({
+        "user_id": user_id,
+        "file_name": fname,
+        "extracted_text": extracted_text,
+        "fund_limits": fund_limits,
+        "mandate_summary": mandate_summary,
+        "uploaded_at": datetime.utcnow().isoformat()
+    }).execute()
+    st.success(f"Saved extracted text for {fname}")
+    st.text_area("Preview (first 2000 chars)", extracted_text[:2000], height=300)
 else:
     st.info("No Kite access token. Login first.")
+
+
