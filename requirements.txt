@@ -9,5 +9,3 @@ ta
 supabase 
 matplotlib
 PyPDF2
-python-docx
-exceptions
