@@ -17,7 +17,7 @@ try:
     supabase_conf = st.secrets["supabase"]
     SUPABASE_URL = supabase_conf["url"]
     SUPABASE_KEY = supabase_conf["anon_key"]
-except Exception as e:
+except Exception:
     st.error("Missing Supabase secrets under [supabase] in Streamlit secrets. Provide url and anon_key.")
     st.stop()
 
@@ -29,7 +29,7 @@ try:
     API_KEY = kite_conf["api_key"]
     API_SECRET = kite_conf["api_secret"]
     REDIRECT_URI = kite_conf["redirect_uri"]
-except Exception as e:
+except Exception:
     st.error("Missing Kite credentials under [kite] in Streamlit secrets.")
     st.stop()
 
@@ -45,22 +45,20 @@ if st.sidebar.button("Login"):
     try:
         # sign in
         supabase.auth.sign_in_with_password({"email": email, "password": password})
-        # fetch user
         current = supabase.auth.get_user()
-        # normalize shape
+
+        # normalize
         user = None
         if isinstance(current, dict):
-            # newer library often returns {'data': {'user': {...}}}
             user = current.get("data", {}).get("user") or current.get("user") or current.get("data")
         else:
-            # older clients return object with .user
             try:
                 user = current.user
             except Exception:
                 user = None
 
         if not user:
-            st.sidebar.error("Login: could not fetch user object. Check credentials or client version.")
+            st.sidebar.error("Login failed. Could not fetch user object.")
         else:
             st.session_state["user"] = user
             uid = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
@@ -72,7 +70,6 @@ if "user" not in st.session_state:
     st.info("Please login via the sidebar (Supabase Auth) to proceed.")
     st.stop()
 
-# helper for uid (not used for inserts; only for display)
 def _uid_from_user(user_obj):
     if user_obj is None:
         return None
@@ -86,19 +83,13 @@ if not user_id:
     st.error("Could not determine user id from Supabase user object.")
     st.stop()
 
-# ---------- Kite login link ----------
+# ---------- Kite login ----------
 st.markdown("### Step 1 — Login to Zerodha Kite")
 st.write("Click the link below and complete login. You will be redirected to the configured redirect URI with a request_token.")
 st.markdown(f"[🔗 Open Kite login]({login_url})")
 
 query_params = st.experimental_get_query_params()
-request_token = None
-if "request_token" in query_params:
-    vals = query_params.get("request_token")
-    if isinstance(vals, list) and len(vals) > 0:
-        request_token = vals[0]
-    elif isinstance(vals, str):
-        request_token = vals
+request_token = query_params.get("request_token", [None])[0]
 
 # ---------- Exchange token ----------
 if request_token and "kite_access_token" not in st.session_state:
@@ -112,15 +103,16 @@ if request_token and "kite_access_token" not in st.session_state:
             st.session_state["kite_login_response"] = data
             st.success("Kite access token obtained.")
 
-            # Persist token in DB WITHOUT user_id (DB will set user_id = auth.uid())
+            # Persist token with user_id
             try:
                 supabase.table("kite_tokens").insert({
+                    "user_id": user_id,
                     "access_token": access_token,
                     "login_data": data,
                     "created_at": datetime.utcnow().isoformat()
                 }).execute()
             except Exception as e:
-                st.warning(f"Could not persist kite token to DB: {e}")
+                st.warning(f"Could not persist kite token: {e}")
     except Exception as e:
         st.error(f"Kite session exchange failed: {e}")
 
@@ -143,8 +135,8 @@ if "kite_access_token" in st.session_state:
                 st.write("Orders fetched:")
                 st.dataframe(df)
 
-                # Persist: do NOT include user_id; DB default auth.uid() will apply
                 supabase.table("orders").insert({
+                    "user_id": user_id,
                     "data": df.to_dict(orient="records"),
                     "created_at": datetime.utcnow().isoformat()
                 }).execute()
@@ -162,20 +154,17 @@ if "kite_access_token" in st.session_state:
                 st.dataframe(df_net)
 
                 supabase.table("positions").insert({
+                    "user_id": user_id,
                     "data": df_net.to_dict(orient="records"),
                     "created_at": datetime.utcnow().isoformat()
                 }).execute()
                 st.success("Positions saved to Supabase.")
 
-                # demo compliance check
                 if not df_net.empty and "quantity" in df_net.columns:
-                    try:
-                        qty_series = pd.to_numeric(df_net["quantity"], errors="coerce").fillna(0).astype(int)
-                        over_limit = df_net[qty_series > 10000]
-                        if not over_limit.empty:
-                            st.error("⚠️ Demo Compliance: position(s) exceed 10,000 units.")
-                    except Exception:
-                        pass
+                    qty_series = pd.to_numeric(df_net["quantity"], errors="coerce").fillna(0).astype(int)
+                    over_limit = df_net[qty_series > 10000]
+                    if not over_limit.empty:
+                        st.error("⚠️ Demo Compliance: position(s) exceed 10,000 units.")
             except Exception as e:
                 st.error(f"Error fetching/saving positions: {e}")
 
@@ -187,6 +176,7 @@ if "kite_access_token" in st.session_state:
                 st.dataframe(df)
 
                 supabase.table("holdings").insert({
+                    "user_id": user_id,
                     "data": df.to_dict(orient="records"),
                     "created_at": datetime.utcnow().isoformat()
                 }).execute()
@@ -196,7 +186,7 @@ if "kite_access_token" in st.session_state:
 
         if st.button("🚪 Logout (clear Kite token)"):
             st.session_state.pop("kite_access_token", None)
-            st.success("Cleared Kite token. You can login to Kite again if needed.")
+            st.success("Cleared Kite token. You can login again.")
             st.experimental_rerun()
 
     with col2:
@@ -213,9 +203,7 @@ if "kite_access_token" in st.session_state:
                 if fname.lower().endswith(".pdf"):
                     try:
                         reader = PdfReader(io.BytesIO(raw_bytes))
-                        parts = []
-                        for p in reader.pages:
-                            parts.append(p.extract_text() or "")
+                        parts = [p.extract_text() or "" for p in reader.pages]
                         extracted_text = "\n".join(parts)
                     except Exception as e:
                         st.error(f"PDF parse error: {e}")
@@ -225,13 +213,10 @@ if "kite_access_token" in st.session_state:
                         extracted_text = raw_bytes.decode("utf-8", errors="ignore")
                     except Exception:
                         extracted_text = raw_bytes.decode("latin-1", errors="ignore")
-                else:
-                    st.error("Only PDF or TXT allowed.")
-                    extracted_text = ""
 
-                # Persist extracted text WITHOUT user_id (DB will set it)
-                if extracted_text is not None:
+                if extracted_text:
                     supabase.table("documents").insert({
+                        "user_id": user_id,
                         "file_name": fname,
                         "extracted_text": extracted_text,
                         "uploaded_at": datetime.utcnow().isoformat()
@@ -242,4 +227,4 @@ if "kite_access_token" in st.session_state:
                 st.error(f"Failed to process upload: {e}")
 
 else:
-    st.info("No Kite access token in session. Login to Kite and complete redirect to get request_token.")
+    st.info("No Kite access token in session. Login to Kite first.")
