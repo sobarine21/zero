@@ -6,5 +6,5 @@ plotly
 scikit-learn
 lightgbm
 ta
-yfinance
+supabase 
 matplotlib
