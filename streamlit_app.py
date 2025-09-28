@@ -20,7 +20,6 @@ except Exception:
     st.error("Missing Supabase secrets under [supabase] in Streamlit secrets. Provide url and anon_key.")
     st.stop()
 
-# initial anon client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ---------- Kite config ----------
@@ -47,14 +46,8 @@ if st.sidebar.button("Login"):
         if not session or not getattr(session, "user", None):
             st.sidebar.error("Login failed. Could not fetch user object.")
         else:
-            # attach JWT to new client so RLS works
-            access_token = session.session.access_token
-            supabase = create_client(
-                SUPABASE_URL,
-                SUPABASE_KEY,
-                options={"headers": {"Authorization": f"Bearer {access_token}"}}
-            )
-
+            # set the session for RLS
+            supabase.auth.set_session(session.session.access_token, session.session.refresh_token)
             st.session_state["supabase"] = supabase
             st.session_state["user"] = session.user
             st.sidebar.success(f"Logged in: {email} (uid={session.user.id})")
