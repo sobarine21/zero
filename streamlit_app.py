@@ -1,4 +1,4 @@
-# -------------------- streamlit_kite_compliance.py --------------------
+# -------------------- streamlit_kite_compliance_pro.py --------------------
 import streamlit as st
 from kiteconnect import KiteConnect
 import pandas as pd
@@ -9,16 +9,16 @@ from PyPDF2 import PdfReader
 import json
 import re
 
-# ---------- helper: safe JSON encoder ----------
+# ---------- Helper: safe JSON encoder ----------
 def safe_json(obj):
-    """Convert dicts/dataframes to JSON-safe python objects (str for datetime)."""
     return json.loads(json.dumps(obj, default=str))
 
-# ---------- helper: compliance checks ----------
-def run_compliance_checks(positions_df, documents_list):
+# ---------- Helper: run compliance checks ----------
+def run_compliance_checks(positions_df, documents_list, margin_data):
     """
     positions_df: DataFrame of positions fetched from Kite
     documents_list: List of dicts from Supabase documents table [{'extracted_text':...}, ...]
+    margin_data: dict from Kite API
     Returns issues list, positions_df with margin/compliance columns
     """
     issues = []
@@ -35,10 +35,22 @@ def run_compliance_checks(positions_df, documents_list):
             max_limit = int(m.group(1))
 
     for idx, row in positions_df.iterrows():
-        # Demo margin calculation (10% of value)
         price = float(row.get("average_price") or 0)
         quantity = int(row.get("quantity") or 0)
-        margin = price * quantity * 0.1
+        product = row.get("exchange") or "NSE"
+
+        # Margin lookup by segment (demo: equity / commodity / currency)
+        margin_pct = 0.1  # default fallback
+        segment = row.get("product") or "MIS"
+        if margin_data:
+            if "equity" in margin_data and segment.upper() in margin_data["equity"]:
+                margin_pct = float(margin_data["equity"][segment.upper()])
+            elif "commodity" in margin_data and segment.upper() in margin_data["commodity"]:
+                margin_pct = float(margin_data["commodity"][segment.upper()])
+            elif "currency" in margin_data and segment.upper() in margin_data["currency"]:
+                margin_pct = float(margin_data["currency"][segment.upper()])
+
+        margin = price * quantity * margin_pct
         positions_df.at[idx, "margin_required"] = margin
 
         # Compliance check vs max limit
@@ -49,7 +61,7 @@ def run_compliance_checks(positions_df, documents_list):
             )
             issues.append(f"Position {row['tradingsymbol']} exceeds limit ({quantity} > {max_limit})")
 
-        # Demo loss check
+        # Demo daily loss check
         day_change = float(row.get("day_change") or 0)
         if day_change < -50000:
             positions_df.at[idx, "compliance_status"] = "VIOLATION"
@@ -57,11 +69,12 @@ def run_compliance_checks(positions_df, documents_list):
                 f"Position {row['tradingsymbol']} daily loss exceeds 50k ({day_change})"
             )
             issues.append(f"Position {row['tradingsymbol']} daily loss exceeds 50k ({day_change})")
+
     return issues, positions_df
 
 # ---------- Streamlit UI ----------
-st.set_page_config(page_title="Realtime Portfolio Compliance", layout="wide")
-st.title("📊 Realtime Portfolio Compliance with Zerodha + Supabase")
+st.set_page_config(page_title="📊 Realtime Portfolio Compliance Pro", layout="wide")
+st.title("📊 Realtime Portfolio Compliance with Zerodha + Supabase (Pro)")
 
 # ---------- Supabase config ----------
 try:
@@ -113,7 +126,6 @@ user_id = user.id
 st.markdown("### Step 1 — Login to Zerodha Kite")
 st.write("Click the link below and complete login. You will be redirected to the configured redirect URI with a request_token.")
 st.markdown(f"[🔗 Open Kite login]({login_url})")
-
 query_params = st.experimental_get_query_params()
 request_token = query_params.get("request_token", [None])[0]
 
@@ -125,7 +137,6 @@ if request_token and "kite_access_token" not in st.session_state:
         st.session_state["kite_access_token"] = access_token
         st.session_state["kite_login_response"] = data
         st.success("Kite access token obtained.")
-        # Persist token
         supabase.table("kite_tokens").insert({
             "user_id": user_id,
             "access_token": access_token,
@@ -144,44 +155,80 @@ if "kite_access_token" in st.session_state:
     st.markdown("## 🚀 Portfolio Data & Compliance Checks")
     col1, col2 = st.columns([1, 1])
 
+    # ---------- Left Column: Broker Data ----------
     with col1:
-        st.subheader("Broker Data")
+        st.subheader("Broker Data & Compliance")
 
         # ---------- Orders ----------
         if st.button("📑 Fetch & Save Orders"):
             try:
                 orders = k.orders()
-                df = pd.DataFrame(orders)
-                st.dataframe(df)
+                df_orders = pd.DataFrame(orders)
+                st.dataframe(df_orders)
                 supabase.table("orders").insert({
                     "user_id": user_id,
-                    "data": safe_json(df.to_dict(orient="records")),
+                    "data": safe_json(df_orders.to_dict(orient="records")),
                     "created_at": datetime.utcnow().isoformat()
                 }).execute()
                 st.success("Orders saved to Supabase.")
             except Exception as e:
                 st.error(f"Error fetching/saving orders: {e}")
 
-        # ---------- Positions ----------
+        # ---------- Holdings ----------
+        if st.button("📂 Fetch & Save Holdings"):
+            try:
+                holdings = k.holdings()
+                df_holdings = pd.DataFrame(holdings)
+                st.dataframe(df_holdings)
+                supabase.table("holdings").insert({
+                    "user_id": user_id,
+                    "data": safe_json(df_holdings.to_dict(orient="records")),
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+                st.success("Holdings saved to Supabase.")
+            except Exception as e:
+                st.error(f"Error fetching/saving holdings: {e}")
+
+        # ---------- Positions with Margin & Compliance ----------
         if st.button("📈 Fetch & Save Positions & Compliance"):
             try:
                 positions = k.positions()
-                net = positions.get("net", []) if isinstance(positions, dict) else []
-                df_net = pd.DataFrame(net)
+                net_positions = positions.get("net", []) if isinstance(positions, dict) else []
+                df_positions = pd.DataFrame(net_positions)
 
-                # fetch uploaded documents
+                # Fetch uploaded fund documents
                 docs_res = supabase.table("documents").select("*").eq("user_id", user_id).execute()
                 documents_list = docs_res.data or []
 
-                # Run compliance
-                issues, df_net = run_compliance_checks(df_net, documents_list)
+                # Fetch live margins per segment
+                margin_data = {}
+                try:
+                    margin_info = k.margins(segment="equity")
+                    margin_data["equity"] = {k: v.get("enabled", 0) for k, v in margin_info.items()}
+                except:
+                    pass
+                try:
+                    margin_info = k.margins(segment="commodity")
+                    margin_data["commodity"] = {k: v.get("enabled", 0) for k, v in margin_info.items()}
+                except:
+                    pass
+                try:
+                    margin_info = k.margins(segment="currency")
+                    margin_data["currency"] = {k: v.get("enabled", 0) for k, v in margin_info.items()}
+                except:
+                    pass
 
-                st.dataframe(df_net)
+                # Run compliance checks
+                issues, df_positions = run_compliance_checks(df_positions, documents_list, margin_data)
+                st.dataframe(df_positions)
 
-                # Save positions with margin/compliance columns
+                # Save positions with compliance & margin
                 supabase.table("positions").insert({
                     "user_id": user_id,
-                    "data": safe_json(df_net.to_dict(orient="records")),
+                    "data": safe_json(df_positions.to_dict(orient="records")),
+                    "margin_required": None,  # can be aggregated or stored in each row's JSON
+                    "compliance_status": None,
+                    "compliance_issues": None,
                     "created_at": datetime.utcnow().isoformat()
                 }).execute()
 
@@ -191,36 +238,20 @@ if "kite_access_token" in st.session_state:
                         st.write(f"- {i}")
                 else:
                     st.success("✅ All positions within compliance limits.")
-
             except Exception as e:
                 st.error(f"Error fetching/saving positions: {e}")
 
-        # ---------- Holdings ----------
-        if st.button("📂 Fetch & Save Holdings"):
-            try:
-                holdings = k.holdings()
-                df = pd.DataFrame(holdings)
-                st.dataframe(df)
-                supabase.table("holdings").insert({
-                    "user_id": user_id,
-                    "data": safe_json(df.to_dict(orient="records")),
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
-                st.success("Holdings saved to Supabase.")
-            except Exception as e:
-                st.error(f"Error fetching/saving holdings: {e}")
-
         # ---------- Logout ----------
-        if st.button("🚪 Logout (clear Kite token)"):
+        if st.button("🚪 Logout"):
             st.session_state.pop("kite_access_token", None)
             st.success("Cleared Kite token.")
             st.experimental_rerun()
 
-    # ---------- Document Upload & Compliance ----------
+    # ---------- Right Column: Document Upload ----------
     with col2:
         st.subheader("Upload Fund Document (PDF / TXT)")
         uploaded_file = st.file_uploader("Upload PDF or TXT", type=["pdf", "txt"])
-        if uploaded_file is not None:
+        if uploaded_file:
             try:
                 raw_bytes = uploaded_file.read()
                 fname = uploaded_file.name
@@ -232,7 +263,6 @@ if "kite_access_token" in st.session_state:
                 elif fname.lower().endswith(".txt"):
                     extracted_text = raw_bytes.decode("utf-8", errors="ignore")
 
-                # Parse fund limits / mandate summary
                 fund_limits = {}
                 mandate_summary = ""
                 max_match = re.search(r"max position[:\s]+(\d+)", extracted_text.lower())
@@ -253,4 +283,4 @@ if "kite_access_token" in st.session_state:
                     st.text_area("Preview (first 2000 chars)", extracted_text[:2000], height=300)
 
 else:
-    st.info("No Kite access token in session. Login to Kite first.")
+    st.info("No Kite access token. Login first.")
