@@ -270,7 +270,7 @@ if "kite_access_token" in st.session_state:
                     fund_limits["max_position"] = int(max_match.group(1))
                     mandate_summary = f"Max position: {fund_limits['max_position']}"
 
-              if extracted_text:
+   if extracted_text:
     supabase.table("documents").insert({
         "user_id": user_id,
         "file_name": fname,
